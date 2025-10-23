@@ -9,7 +9,7 @@ def main():
         variable_backend="I_Effective",
         phase_backend="Input04",
         timebase="15m",
-        start="2025-10-01 12:00",
+        start="2025-09-01 12:00",
         end="2025-10-02 12:00",
         dry_run=False,
         auth_token=None,
