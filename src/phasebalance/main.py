@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 
 def main():
     data = fetch_hist_json(
-        device_id=408,
+        device_id=301,
         variable_backend="I_Effective",
         phase_backend="Input04",
         timebase="15m",
