@@ -36,7 +36,12 @@ RAW_XML_FILENAME   = "devices_raw.xml"
 
 # If True, also call /devices/{id}. Usually unnecessary.
 FETCH_DETAILS_PER_DEVICE = False
+# ───────────────────────────── FILTER CONFIG ────────────────────────────────
+EXCLUDE_TYPES = {"JanitzaUMG801", "JanitzaUMG801BaseModule", "Janitza800-CT8-A"}
+EXCLUDE_DESC_PREFIXES = ("Mod",)  # description startswith any of these
+EXCLUDE_NAME_SUFFIXES = ("Measurement Group 2", "Measurement Group 3")  # name endswith
 # ───────────────────────────────────────────────────────────────────────────
+
 
 
 def ensure_dir(path: str | pathlib.Path) -> None:
@@ -150,6 +155,22 @@ def maybe_fetch_details(session: requests.Session, rows: List[Dict[str, Any]]) -
             r["detail_error"] = str(e)
 
 
+def apply_filter(df: pd.DataFrame) -> pd.DataFrame:
+    """Apply 'inactive' device filters like in your screenshot."""
+    name = df["name"].fillna("")
+    desc = df["description"].fillna("")
+    mask = (
+        (~df["type"].isin(EXCLUDE_TYPES)) &
+        (~desc.str.startswith(EXCLUDE_DESC_PREFIXES)) &
+        (~name.str.endswith(EXCLUDE_NAME_SUFFIXES))
+    )
+    before = len(df)
+    out = df[mask].copy()
+    removed = before - len(out)
+    print(f"🔎 Filter: kept {len(out)} / {before} rows (removed {removed}).")
+    return out
+
+
 def main():
     ensure_dir(OUT_DIR)
     out_csv = os.path.join(OUT_DIR, CSV_FILENAME)
@@ -183,6 +204,9 @@ def main():
         "type", "typeDisplayName", "dnr_str", "dnr_num", "feeder", "phase"
     ]
     df = df[cols]
+
+    # >>> Apply the filtering before saving <<<
+    df = apply_filter(df)
 
     df.to_csv(out_csv, index=False, encoding="utf-8")
     print(f"✅ Saved inventory CSV: {out_csv} (rows: {len(df)})")

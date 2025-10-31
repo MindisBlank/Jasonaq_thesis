@@ -365,6 +365,15 @@ def main():
     caps = pd.DataFrame(all_rows)
     caps = deduplicate(caps)
 
+
+    # --- Capability filter (remove noisy variables) ---
+    PATTERN = r"(Harmonic Voltage|Interharmonic Voltage|THD|flicker|Harmonic Current|temperature|Distortion power)"
+    before_n = len(caps)
+    caps = caps[~caps["value_name"].astype(str).str.contains(PATTERN, case=False, na=False)].copy()
+    removed_n = before_n - len(caps)
+    print(f"🔎 Capability filter: removed {removed_n}, kept {len(caps)}")
+
+
     ordered_cols = [
         "device_id", "dnr_str", "dnr_num", "feeder", "phase_device",
         "device_type", "device_type_name",
