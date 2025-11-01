@@ -1,5 +1,39 @@
+"""
+phase_unbalance_utils.py
+-----------
+Contains all calculation functions for electrical imbalance and power quality
+metrics derived from smart meter or substation data.
+
+This module provides current, voltage, and sequence-based imbalance metrics,
+neutral current estimations, and helper functions to compute robustly even when
+some inputs are missing.
+"""
 import cmath
 import math
+from typing import Optional, Dict, Any
+
+# ---------- NaN constants ----------
+NAN = float("nan")
+CNAN = complex(float("nan"), float("nan"))
+
+# ---------- Default NaN dictionaries ----------
+_PHASE_NANS = {
+    "UC": NAN,
+    "Unbalance_a": NAN,
+    "Unbalance_b": NAN,
+    "Unbalance_c": NAN,
+}
+_SEQ_NANS = {
+    "I0": CNAN,
+    "I1": CNAN,
+    "I2": CNAN,
+    "M2": CNAN,
+    "M0": CNAN,
+    "M2_mag": NAN,
+    "M2_angle_deg": NAN,
+    "M0_mag": NAN,
+    "M0_angle_deg": NAN,
+}
 
 def dib(Ia: float, Ib: float, Ic: float) -> float:
     """
@@ -201,3 +235,222 @@ def sequence_unbalance_factors(Ia: complex, Ib: complex, Ic: complex) -> dict: #
         "M0_mag": M0_mag,
         "M0_angle_deg": M0_angle_deg,
     }
+
+def cur_ratio(ia: float, ib: float, ic: float) -> float:
+    """
+    Calculate the Current Unbalance Ratio (CUR) in percent.
+
+    Formula:
+        CUR[%] = max(|Ia - Ib|, |Ia - Ic|, |Ib - Ic|) /
+                 (|Ia| + |Ib| + |Ic|) * 100
+
+    Parameters
+    ----------
+    ia, ib, ic : float
+        Phase currents (TRMS scalar values, can be signed if direction known)
+
+    Returns
+    -------
+    float
+        Current Unbalance Ratio in percent.
+    """
+    denom = abs(ia) + abs(ib) + abs(ic)
+    if denom == 0:
+        return 0.0
+
+    numerator = max(abs(ia - ib), abs(ia - ic), abs(ib - ic))
+    return (numerator / denom) * 100.0
+
+def cur_dev_ratio(ia: float, ib: float, ic: float) -> float:
+    """
+    Calculate the deviation-based Current Unbalance Ratio (CUR_dev) in percent.
+
+    Formula:
+        CUR_dev[%] = max(|Ia - I_avg|, |Ib - I_avg|, |Ic - I_avg|) /
+                     (|Ia| + |Ib| + |Ic|) * 100
+
+    Parameters
+    ----------
+    ia, ib, ic : float
+        Phase currents (TRMS scalar values, can be signed if direction known)
+
+    Returns
+    -------
+    float
+        Deviation-based Current Unbalance Ratio in percent.
+    """
+    denom = abs(ia) + abs(ib) + abs(ic)
+    if denom == 0:
+        return 0.0
+
+    i_avg = (ia + ib + ic) / 3.0
+    numerator = max(abs(ia - i_avg), abs(ib - i_avg), abs(ic - i_avg))
+    return (numerator / denom) * 100.0
+
+def neutral_from_trms_120deg(IA: float, IB: float, IC: float) -> float:
+    """
+    Estimate neutral current using only TRMS magnitudes,
+    assuming 120° separation and similar PF angles.
+    """
+    return math.sqrt(
+        IA*IA + IB*IB + IC*IC - IA*IB - IB*IC - IC*IA
+    )
+
+def neutral_from_trms_and_pf(IA: float, IB: float, IC: float,
+                             pfA: float, pfB: float, pfC: float,
+                             lagging: bool = True) -> float:
+    """
+    Estimate neutral current using TRMS magnitudes + per-phase PF.
+    Assumes each phase current lags its own phase voltage by acos(pf).
+    Set lagging=False if you know currents lead (capacitive).
+    """
+    # base phase angles in degrees
+    base = [0.0, -120.0, 120.0]
+    # per-phase PF angles in radians (sign: +lag, -lead)
+    sign = 1.0 if lagging else -1.0
+    thetas = [sign*math.acos(max(min(pf, 1.0), -1.0)) for pf in (pfA, pfB, pfC)]
+    mags = [IA, IB, IC]
+
+    # build phasors and sum
+    Rx = 0.0
+    Ry = 0.0
+    for M, base_deg, th in zip(mags, base, thetas):
+        ang = math.radians(base_deg) + th
+        Rx += M * math.cos(ang)
+        Ry += M * math.sin(ang)
+    return math.hypot(Rx, Ry)
+
+def _safe_call(cond, fn, default, *args, **kwargs):
+    """
+    Safely call a function if a condition is met.
+
+    Parameters
+    ----------
+    cond : bool
+        Condition determining whether to call the function.
+    fn : callable
+        Function to call if the condition is True.
+    default : any
+        Default value to return if the condition is False or an error occurs.
+    *args, **kwargs
+        Arguments and keyword arguments for the function.
+
+    Returns
+    -------
+    any
+        The result of fn(*args, **kwargs) if successful; otherwise, the default value.
+    """
+    if not cond:
+        return default
+
+    try:
+        return fn(*args, **kwargs)
+    except Exception:
+        return default
+
+def compute_meter_metrics(
+    Ia: Optional[float] = None,
+    Ib: Optional[float] = None,
+    Ic: Optional[float] = None,
+    Va_mag: Optional[float] = None,
+    Vb_mag: Optional[float] = None,
+    Vc_mag: Optional[float] = None,
+    Ia_phasor: Optional[complex] = None,
+    Ib_phasor: Optional[complex] = None,
+    Ic_phasor: Optional[complex] = None,
+    Va_phasor: Optional[complex] = None,
+    Vb_phasor: Optional[complex] = None,
+    Vc_phasor: Optional[complex] = None,
+    pfA: Optional[float] = None,
+    pfB: Optional[float] = None,
+    pfC: Optional[float] = None,
+    lagging: bool = True,
+) -> Dict[str, Any]:
+    """
+    Collects all imbalance metrics robustly.
+    Only computes metrics when required inputs are present.
+    Missing inputs return NaN or NaN-filled dicts.
+    """
+    results = {
+        "dib": NAN,
+        "vuf_magnitude": NAN,
+        "vuf_symmetrical": NAN,
+        "current_unbalance_rms": NAN,
+        "phase_unbalance_metrics": _PHASE_NANS.copy(),
+        "sequence_unbalance_factors": _SEQ_NANS.copy(),
+        "cur_ratio": NAN,
+        "cur_dev_ratio": NAN,
+        "neutral_from_trms_120deg": NAN,
+        "neutral_from_trms_and_pf": NAN,
+    }
+
+    has_I = Ia is not None and Ib is not None and Ic is not None
+    has_Vmag = Va_mag is not None and Vb_mag is not None and Vc_mag is not None
+    has_Iph = Ia_phasor is not None and Ib_phasor is not None and Ic_phasor is not None
+    has_Vph = Va_phasor is not None and Vb_phasor is not None and Vc_phasor is not None
+    has_pf = all(p is not None for p in (pfA, pfB, pfC))
+
+    # --- Current metrics ---
+    results["dib"] = _safe_call(has_I, dib, NAN, Ia, Ib, Ic)
+    results["current_unbalance_rms"] = _safe_call(has_I, current_unbalance_rms, NAN, Ia, Ib, Ic)
+    results["phase_unbalance_metrics"] = _safe_call(has_I, phase_unbalance_metrics, _PHASE_NANS.copy(), Ia, Ib, Ic)
+    results["cur_ratio"] = _safe_call(has_I, cur_ratio, NAN, Ia, Ib, Ic)
+    results["cur_dev_ratio"] = _safe_call(has_I, cur_dev_ratio, NAN, Ia, Ib, Ic)
+    results["neutral_from_trms_120deg"] = _safe_call(has_I, neutral_from_trms_120deg, NAN, Ia, Ib, Ic)
+
+    # --- Neutral from PF ---
+    results["neutral_from_trms_and_pf"] = _safe_call(
+        has_I and has_pf, neutral_from_trms_and_pf, NAN, Ia, Ib, Ic, pfA, pfB, pfC, lagging=lagging
+    )
+
+    # --- Voltage metrics ---
+    results["vuf_magnitude"] = _safe_call(has_Vmag, vuf_magnitude, NAN, Va_mag, Vb_mag, Vc_mag)
+    results["vuf_symmetrical"] = _safe_call(has_Vph, vuf_symmetrical, NAN, Va_phasor, Vb_phasor, Vc_phasor)
+
+    # --- Sequence metrics ---
+    results["sequence_unbalance_factors"] = _safe_call(
+        has_Iph, sequence_unbalance_factors, _SEQ_NANS.copy(), Ia_phasor, Ib_phasor, Ic_phasor
+    )
+
+    return results
+
+# -------------------------- Example usage CLI --------------------------
+if __name__ == "__main__":
+    """
+    Run this module directly to see example calls and outputs.
+
+    $ python phase_unbalance_utils.py
+    """
+    from pprint import pprint
+
+    print("\nExample 1 — Only TRMS currents (Ia, Ib, Ic):")
+    res1 = compute_meter_metrics(Ia=420.0, Ib=280.0, Ic=275.0)
+    pprint(res1)
+
+    print("\nExample 2 — Currents + per-phase PF (neutral estimate with PF):")
+    res2 = compute_meter_metrics(
+        Ia=420.0, Ib=280.0, Ic=275.0,
+        pfA=0.99, pfB=0.98, pfC=0.97,  # set lagging=False if capacitive
+    )
+    pprint(res2)
+
+    print("\nExample 3 — Voltage magnitudes (VUF magnitude):")
+    res3 = compute_meter_metrics(Va_mag=230.0, Vb_mag=226.0, Vc_mag=233.0)
+    pprint(res3)
+
+    print("\nExample 4 — Current and voltage phasors (sequence + VUF symmetrical):")
+    # Example phasors: magnitude ∠ angle(deg)
+    def phasor(mag, deg):
+        return cmath.rect(mag, math.radians(deg))
+
+    res4 = compute_meter_metrics(
+        Ia_phasor=phasor(420, 0),
+        Ib_phasor=phasor(280, -120),
+        Ic_phasor=phasor(275, 120),
+        Va_phasor=phasor(230, 0),
+        Vb_phasor=phasor(230, -120),
+        Vc_phasor=phasor(230, 120),
+    )
+    pprint(res4)
+
+    print("\nDone.")
