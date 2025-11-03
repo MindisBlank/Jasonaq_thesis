@@ -6,9 +6,6 @@ __pycache__/
 # metadata files
 /metadata/
 
-# docs
-/docs/
-
 # C extensions
 *.so
 
