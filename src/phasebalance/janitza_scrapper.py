@@ -4,6 +4,7 @@ import time
 import math
 import phase_unbalance_utils as m
 import os
+from datetime import datetime
 
 def _series_from_values(obj, label):
     """
@@ -125,16 +126,79 @@ def has_capability(cap_df, device_id, **criteria):
     for col, val in criteria.items():
         if val is None or col not in df.columns:
             continue
-        df = df[df[col].astype(str) == str(val)]
+        df = df[df[col].astype(str).str.contains(str(val), regex=True, na=False)]
         if df.empty:
             return False
 
     return not df.empty
 
+def resolve_channels(cap_df: pd.DataFrame,
+                     device_id: str,
+                     channels: dict,
+                     require_all: bool = True) -> dict:
+    """
+    Resolve the (value_backend, type_backend) to use for each logical channel.
+
+    channels: dict of
+      channel_key -> {
+         "value_backend": "<exact string>",          # e.g., "I_Effective"
+         "type_candidates": [list of exact strings], # priority order, e.g., ["Input01","L1"]
+      }
+
+    Returns:
+      {
+        channel_key: {"value_backend": "...", "type_backend": "<chosen candidate>"},
+        ...
+      }
+      If require_all=True and any channel can't be resolved, returns {}.
+    """
+    cap = cap_df.copy()
+    cap["device_id"] = cap["device_id"].astype(str)
+    did = str(device_id)
+
+    # Get only rows for this device
+    dev_rows = cap[cap["device_id"] == did]
+    if dev_rows.empty:
+        return {}
+
+    out = {}
+    for key, spec in channels.items():
+        value_backend = str(spec["value_backend"])
+        candidates = [str(c) for c in spec.get("type_candidates", [])]
+
+        # Filter to rows with matching value_backend
+        pool = dev_rows[dev_rows["value_backend"].astype(str) == value_backend]
+        if pool.empty:
+            if require_all:
+                return {}
+            continue
+
+        # Pick first matching candidate
+        chosen = None
+        for cand in candidates:
+            if not pool[pool["type_backend"].astype(str) == cand].empty:
+                chosen = cand
+                break
+
+        if chosen is None:
+            if require_all:
+                return {}
+            continue
+
+        out[key] = {"value_backend": value_backend, "type_backend": chosen}
+
+    return out
+
+
+
 
 def main():
     # --- config ---
+
     OUT_DIR = "results"
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M")
+    # Construct filename with timestamp
+    filename = f"metrics_results_{timestamp}.csv"
     os.makedirs(OUT_DIR, exist_ok=True)
 
     devices = pd.read_csv("metadata/devices.csv")
@@ -148,62 +212,70 @@ def main():
     devices["device_id"] = devices["device_id"].astype(str)
     caps["device_id"] = caps["device_id"].astype(str)
 
-    # Filter for devices that have all three current inputs
-    matches = []
+
+    # What we want to fetch: 3-phase currents with naming fallbacks
+    CHANNEL_SPEC_I = {
+        "IA": {"value_backend": "I_Effective", "type_candidates": ["Input01", "L1"]},
+        "IB": {"value_backend": "I_Effective", "type_candidates": ["Input02", "L2"]},
+        "IC": {"value_backend": "I_Effective", "type_candidates": ["Input03", "L3"]},
+    }
+
+    # Filter for devices that have all three resolved channels
+    matches = []  # (did, name, plan)
     for _, row in devices.iterrows():
-        did = row["device_id"]
+        did  = row["device_id"]
         name = row.get("name", "")
-        has_input1 = has_capability(caps, did, value_backend="I_Effective", type_backend="Input01")
-        has_input2 = has_capability(caps, did, value_backend="I_Effective", type_backend="Input02")
-        has_input3 = has_capability(caps, did, value_backend="I_Effective", type_backend="Input03")
-        if has_input1 and has_input2 and has_input3:
-            matches.append((did, name))
+        plan = resolve_channels(caps, device_id=did, channels=CHANNEL_SPEC_I, require_all=True)
+        if plan:  # only keep full 3-phase devices
+            matches.append((did, name, plan))
 
     print(f"\nTotal devices with 3-phase currents: {len(matches)}")
 
     all_rows = []
-    for did, name in matches:
-        print(f"📡 Fetching data for device {did} ({name})...")
+    for did, name, plan in matches:
+        # plan looks like:
+        # {"IA":{"value_backend":"I_Effective","type_backend":"Input01" or "L1"}, ...}
+
+        pa = plan["IA"]["type_backend"]
+        pb = plan["IB"]["type_backend"]
+        pc = plan["IC"]["type_backend"]
+
+        print(f"📡 Fetching data for device {did} ({name}) using phases: "
+              f"A={pa}, B={pb}, C={pc}...")
 
         # --- fetch 3-phase current histories over the window ---
         data_in01 = fetch_hist_json(
             device_id=did,
-            variable_backend="I_Effective",
-            phase_backend="Input01",
+            variable_backend=plan["IA"]["value_backend"],   # "I_Effective"
+            phase_backend=pa,                                # resolved "Input01" or "L1"
             timebase=sample_time,
             start=start,
             end=end,
         )
         data_in02 = fetch_hist_json(
             device_id=did,
-            variable_backend="I_Effective",
-            phase_backend="Input02",
+            variable_backend=plan["IB"]["value_backend"],
+            phase_backend=pb,
             timebase=sample_time,
             start=start,
             end=end,
         )
         data_in03 = fetch_hist_json(
             device_id=did,
-            variable_backend="I_Effective",
-            phase_backend="Input03",
+            variable_backend=plan["IC"]["value_backend"],
+            phase_backend=pc,
             timebase=sample_time,
             start=start,
             end=end,
         )
-
-        # (Optional) If you later want voltage or PF, fetch and pass:
-        # data_va = fetch_hist_json(did, "U_Effective", "Input01", sample_time, start, end)
-        # data_vb = fetch_hist_json(did, "U_Effective", "Input02", sample_time, start, end)
-        # data_vc = fetch_hist_json(did, "U_Effective", "Input03", sample_time, start, end)
-        # data_pf_a = fetch_hist_json(did, "PowerFactor", "Input01", sample_time, start, end)
-        # data_pf_b = fetch_hist_json(did, "PowerFactor", "Input02", sample_time, start, end)
-        # data_pf_c = fetch_hist_json(did, "PowerFactor", "Input03", sample_time, start, end)
+        # --- skip if any of the phases returned no data ---
+        if data_in01 is None or data_in02 is None or data_in03 is None:
+            print(f"⚠️ Skipping device {did} ({name}) — missing data in one or more phases.")
+            continue
 
         # --- compute metrics from monthly averages ---
         metrics = _compute_metrics_from_json(
             json_in01=data_in01, json_in02=data_in02, json_in03=data_in03,
-            # json_va=data_va, json_vb=data_vb, json_vc=data_vc,
-            # json_pf_a=data_pf_a, json_pf_b=data_pf_b, json_pf_c=data_pf_c,
         )
 
         # Also store the averaged input currents for traceability
@@ -212,23 +284,27 @@ def main():
         ic_avg = _avg_from_json(data_in03)
 
         flat = _flatten_metrics(metrics)
-        flat["device_id"] = did
-        flat["name"] = name
+        flat["device_id"]    = did
+        flat["name"]         = name
         flat["window_start"] = start
-        flat["window_end"] = end
-        flat["sample_time"] = sample_time
-        flat["Ia_avg"] = ia_avg
-        flat["Ib_avg"] = ib_avg
-        flat["Ic_avg"] = ic_avg
+        flat["window_end"]   = end
+        flat["sample_time"]  = sample_time
+        flat["Ia_avg"]       = ia_avg
+        flat["Ib_avg"]       = ib_avg
+        flat["Ic_avg"]       = ic_avg
+        # record which concrete labels were used
+        flat["Ia_label"]     = pa
+        flat["Ib_label"]     = pb
+        flat["Ic_label"]     = pc
 
         all_rows.append(flat)
 
         n1 = len(data_in01.get("values", []))
         n2 = len(data_in02.get("values", []))
         n3 = len(data_in03.get("values", []))
-        print(f"✅ Points fetched: Input01={n1}, Input02={n2}, Input03={n3}")
+        print(f"✅ Points fetched: {pa}={n1}, {pb}={n2}, {pc}={n3}")
 
-        # polite pause
+        # polite pause to avoid rate limits
         time.sleep(10)
 
     # --- save results ---
@@ -243,7 +319,7 @@ def main():
     other_cols = [c for c in df_out.columns if c not in front_cols]
     df_out = df_out[front_cols + sorted(other_cols)]
 
-    out_path = os.path.join(OUT_DIR, "metrics_results.csv")
+    out_path = os.path.join(OUT_DIR, filename)
     df_out.to_csv(out_path, index=False)
     print(f"\n📁 Results written to {out_path}")
 

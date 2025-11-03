@@ -134,56 +134,124 @@ def build_hist_url(
     )
 
 
+def _expand_timebases(tb: Union[int, str, list, tuple]) -> list[str]:
+    """
+    Normalize the 'timebase' arg to a prioritized list of strings to try.
+    Accepts:
+      - single int seconds (e.g., 900)
+      - single label/short (e.g., "15m", "10 minutes")
+      - iterable of any mix above (e.g., ["15m","10m","1m"])
+    Returns list of canonical short labels like ["15m","10m","1m"] in priority order.
+    """
+    def _to_short_label(x) -> str:
+        sec = _parse_timebase(x)                 # uses your existing helper
+        if sec % 3600 == 0: return f"{sec//3600}h"
+        if sec % 60   == 0: return f"{sec//60}m"
+        return f"{sec}s"
+
+    # If a single value, make it a list
+    if not isinstance(tb, (list, tuple)):
+        tbs = [tb]
+    else:
+        tbs = list(tb)
+
+    labels = [_to_short_label(x) for x in tbs]
+
+    # If only one was provided, append sensible fallbacks
+    if len(labels) == 1:
+        first = labels[0]
+        if first == "15m":
+            labels += ["10m", "1m"]
+        elif first == "10m":
+            labels += ["15m", "1m"]
+        elif first == "1m":
+            labels += ["15m", "10m"]
+        else:
+            # Unknown cadence: still add common fallbacks
+            labels += ["15m", "10m", "1m"]
+
+    # Deduplicate but keep order
+    seen, out = set(), []
+    for x in labels:
+        if x not in seen:
+            seen.add(x); out.append(x)
+    return out
+
+
 def fetch_hist_json(
     *,
     device_id: int,
     variable_backend: str,
     phase_backend: str,
-    timebase: Union[int, str],
+    timebase: Union[int, str, list, tuple],
     start: Union[str, datetime],
     end: Union[str, datetime],
     tz_name: str = TIMEZONE,
     auth_token: Optional[str] = None,
     dry_run: bool = False,
     timeout_s: int = HTTP_TIMEOUT_S,
-) -> Dict[str, Any]:
+) -> Optional[Dict[str, Any]]:
     """
-    Build the URL and GET the JSON. Returns the parsed JSON (dict) or, if dry_run=True,
-    returns a dict with {"__url__": "<built_url>"} for inspection.
+    Build the URL and GET the JSON. Supports **fallback timebases**:
+      - Pass a single preferred cadence (e.g., "15m"), and it will auto-try "10m", then "1m".
+      - Or pass an explicit priority list, e.g., ["15m","10m","1m"].
 
-    Raises GridVisClientError on input/HTTP/JSON errors.
+    Returns parsed JSON dict. If dry_run=True, returns {"__urls__": [...]} with the tried URLs.
+    Raises GridVisClientError if all attempts fail or return non-JSON.
     """
-    url = build_hist_url(
-        device_id=device_id,
-        variable_backend=variable_backend,
-        phase_backend=phase_backend,
-        timebase=timebase,
-        start=start,
-        end=end,
-        tz_name=tz_name,
-    )
+    cadences = _expand_timebases(timebase)
+    tried_urls = []
+    last_error = None
+    saw_nonjson = False  # <── new flag
 
+    for tb in cadences:
+        url = build_hist_url(
+            device_id=device_id,
+            variable_backend=variable_backend,
+            phase_backend=phase_backend,
+            timebase=tb,              # <- minutes/labels are converted to seconds inside build_hist_url
+            start=start,
+            end=end,
+            tz_name=tz_name,
+        )
+        tried_urls.append(url)
+
+        if dry_run:
+            # For inspection, show every URL we would try
+            continue
+
+        headers = {"Authorization": f"Bearer {auth_token}"} if auth_token else {}
+        try:
+            resp = _SESSION.get(url, headers=headers, timeout=timeout_s)
+            resp.raise_for_status()
+            try:
+                return resp.json()  # ✅ success
+            except ValueError:
+                # Not JSON, probably means "no data"
+                saw_nonjson = True
+                continue
+        except requests.exceptions.RequestException as e:
+            last_error = GridVisClientError(f"HTTP error for timebase '{tb}': {e}\nURL: {url}")
+            continue
+
+    # ─────────── post-loop logic ───────────
     if dry_run:
-        return {"__url__": url}
+        return {"__urls__": tried_urls}
 
-    headers = {}
-    if auth_token:
-        headers["Authorization"] = f"Bearer {auth_token}"
+    if saw_nonjson:
+        print(f"⚠️ No data for device {device_id} ({phase_backend}), skipping.")
+        return None
 
-    try:
-        resp = _SESSION.get(url, headers=headers, timeout=timeout_s)
-        resp.raise_for_status()
-    except requests.exceptions.RequestException as e:
-        raise GridVisClientError(f"HTTP error: {e}\nURL: {url}") from e
+    if last_error:
+        # Serious network or HTTP issue, not just "no data"
+        raise last_error
 
-    try:
-        return resp.json()
-    except ValueError as e:
-        # Not JSON; include a short preview to help debug
-        text_preview = resp.text[:500]
-        raise GridVisClientError(
-            f"Response was not JSON. First 500 chars:\n{text_preview}"
-        ) from e
+    # Fallback catch-all
+    print(f"⚠️ No data for device {device_id} ({phase_backend}), skipping.")
+    return None
+
+
+
 
 
 # Optional: quick smoke test when running this file directly
