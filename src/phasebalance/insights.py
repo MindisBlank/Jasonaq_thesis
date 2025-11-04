@@ -492,15 +492,24 @@ def _parse_threshold_overrides(values: Iterable[str]) -> Dict[str, float]:
 
 
 def main(argv: Optional[List[str]] = None) -> None:
-    args = parse_args(argv)
-
+    #args = parse_args(argv)
+    csv_path = "results/metrics_results_2025-11-04_2316.csv"
+    output_dir = "results"
+    top_n = 5
     thresholds = DEFAULT_THRESHOLDS.copy()
-    thresholds.update(_parse_threshold_overrides(args.threshold))
+    #thresholds.update(_parse_threshold_overrides(args.threshold))
+
+    # report_path, plot_paths = generate_insights(
+    #     csv_path=args.csv_path,
+    #     output_dir=args.output_dir,
+    #     top_n=args.top_n,
+    #     thresholds=thresholds,
+    # )
 
     report_path, plot_paths = generate_insights(
-        csv_path=args.csv_path,
-        output_dir=args.output_dir,
-        top_n=args.top_n,
+        csv_path=csv_path,
+        output_dir=output_dir,
+        top_n=top_n,
         thresholds=thresholds,
     )
 
