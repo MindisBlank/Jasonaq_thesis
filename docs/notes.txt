@@ -1,0 +1,10 @@
+look at the max value from the jantiza meters not just avg
+
+Also construct metrics that reflect what I want to be seen.
+So for the power loss due to imbalance what are the causes of that ? I^2R thermal losses and return current losses like neutral current. So indicators for the thermal losses would be some metric like CUR but that CUR doesn't tell me the exact thermal losses it just correlates with thermal loss so in my thesis I should build up a statement what i am looking at why I am and what metrics i use and there limitations. So for example some one might ask why do i compute CUR when I could just calculate the thermal loss and then compare that with what the thermal loss of a perfectly balanced load. I would say that a metric like CUR is more approachble compared to that since I would need line data as will.
+
+For the phase loading I should look at the max value from the janitza meters. At the end of the day the cable and breaker as to be able to handle the worst case senecio, so detecting that max load and see if its only on one phase could help Veitur delay expansions. I need a metrics for this and I also should look at the duration of this spike as will maybe I should take a geometric approach. but this needs more thinking.
+
+then there is voltage I would say VUF is one metric but are there others? i dont know maybe read a bit on this one Kai also mention that just looking at the smart meter data here is enough. that could be but why not just use the janitza meters as will and throw them away is needed.
+
+I should sprint and chose metrics then scrap and make some kinda of dashboard maybe with plot and graphs. I also need to make sure I dont need to clean data and I should also get thoses answers from Otto
