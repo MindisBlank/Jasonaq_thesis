@@ -99,72 +99,64 @@ def vuf_symmetrical(Va: complex, Vb: complex, Vc: complex) -> float: # This migh
     vuf_value = abs(V_neg) / abs(V_pos)
     return vuf_value
 
-def current_unbalance_rms(Ia: float, Ib: float, Ic: float) -> float:
-    """
-    Calculate the instantaneous RMS-based current unbalance.
+# def current_unbalance_rms(Ia: float, Ib: float, Ic: float) -> float: #tried this one but its the same as the others.
+#     """
+#     Calculate the instantaneous RMS-based current unbalance.
+#     Formula:
+#         I_unbalance = sqrt(Ia^2 + Ib^2 + Ic^2 - 3 * I_avg^2)+
+#     where:
+#         Ia, Ib, Ic : float
+#             Phase currents (in amperes)
+#         I_avg : float
+#             Average of the three phase currents
+#     Returns
+#     -------
+#     float
+#         Instantaneous RMS-based current unbalance (in amperes)
+#     """
+#     I_avg = (Ia + Ib + Ic) / 3
+#     I_unbalance = math.sqrt(Ia**2 + Ib**2 + Ic**2 - 3 * (I_avg**2))
+#     return I_unbalance
 
-    Formula:
-        I_unbalance = sqrt(Ia^2 + Ib^2 + Ic^2 - 3 * I_avg^2)
+# def phase_unbalance_metrics(Ia: float, Ib: float, Ic: float) -> dict:
+#     """
+#     Calculate multiple phase unbalance metrics.
+#     Incldes:
+#         - UC  : Combined unbalance coefficient
+#                 UC = (1/3) * ((Ia/I_avg)^2 + (Ib/I_avg)^2 + (Ic/I_avg)^2)
+#         - Unbalance_a : Ia / I_avg
+#         - Unbalance_b : Ib / I_avg
+#         - Unbalance_c : Ic / I_avg
+#     where:
+#         Ia, Ib, Ic : float
+#             Phase currents (in amperes)
+#         I_avg : float
+#             Average of the three phase currents
+#     Returns
+#     -------
+#     dict
+#         Dictionary containing:
+#                 "UC": float,
+#                 "Unbalance_a": float,
+#                 "Unbalance_b": float,
+#                 "Unbalance_c": float
+#     """
+#     I_avg = (Ia + Ib + Ic) / 3
 
-    where:
-        Ia, Ib, Ic : float
-            Phase currents (in amperes)
-        I_avg : float
-            Average of the three phase currents
+#     if I_avg == 0:
+#         raise ValueError("Average current (I_avg) is zero; cannot compute ratios.")
 
-    Returns
-    -------
-    float
-        Instantaneous RMS-based current unbalance (in amperes)
-    """
-    I_avg = (Ia + Ib + Ic) / 3
-    I_unbalance = math.sqrt(Ia**2 + Ib**2 + Ic**2 - 3 * (I_avg**2))
-    return I_unbalance
+#     unbalance_a = Ia / I_avg
+#     unbalance_b = Ib / I_avg
+#     unbalance_c = Ic / I_avg
+#     uc = (1 / 3) * (unbalance_a**2 + unbalance_b**2 + unbalance_c**2)
 
-def phase_unbalance_metrics(Ia: float, Ib: float, Ic: float) -> dict:
-    """
-    Calculate multiple phase unbalance metrics.
-
-    Includes:
-        - UC  : Combined unbalance coefficient
-                UC = (1/3) * ((Ia/I_avg)^2 + (Ib/I_avg)^2 + (Ic/I_avg)^2)
-        - Unbalance_a : Ia / I_avg
-        - Unbalance_b : Ib / I_avg
-        - Unbalance_c : Ic / I_avg
-
-    where:
-        Ia, Ib, Ic : float
-            Phase currents (in amperes)
-        I_avg : float
-            Average of the three phase currents
-
-    Returns
-    -------
-    dict
-        Dictionary containing:
-            {
-                "UC": float,
-                "Unbalance_a": float,
-                "Unbalance_b": float,
-                "Unbalance_c": float
-            }
-    """
-    I_avg = (Ia + Ib + Ic) / 3
-
-    if I_avg == 0:
-        raise ValueError("Average current (I_avg) is zero; cannot compute ratios.")
-
-    unbalance_a = Ia / I_avg
-    unbalance_b = Ib / I_avg
-    unbalance_c = Ic / I_avg
-    uc = (1 / 3) * (unbalance_a**2 + unbalance_b**2 + unbalance_c**2)
-
-    return {
-        "UC": uc,
-        "Unbalance_a": unbalance_a,
-        "Unbalance_b": unbalance_b,
-        "Unbalance_c": unbalance_c,
-    }
+#     return {
+#         "UC": uc,
+#         "Unbalance_a": unbalance_a,
+#         "Unbalance_b": unbalance_b,
+#         "Unbalance_c": unbalance_c,
+#     }
 
 def sequence_unbalance_factors(Ia: complex, Ib: complex, Ic: complex) -> dict: # Same with VUF symetrical I might need to adjust the inputs here we assume a perfect 120 deg shift but ofcourse in the real wrold that is not the case
     """
@@ -375,8 +367,6 @@ def compute_meter_metrics(
         "dib": NAN,
         "vuf_magnitude": NAN,
         "vuf_symmetrical": NAN,
-        "current_unbalance_rms": NAN,
-        "phase_unbalance_metrics": _PHASE_NANS.copy(),
         "sequence_unbalance_factors": _SEQ_NANS.copy(),
         "cur_ratio": NAN,
         "cur_dev_ratio": NAN,
@@ -392,8 +382,6 @@ def compute_meter_metrics(
 
     # --- Current metrics ---
     results["dib"] = _safe_call(has_I, dib, NAN, Ia, Ib, Ic)
-    results["current_unbalance_rms"] = _safe_call(has_I, current_unbalance_rms, NAN, Ia, Ib, Ic)
-    results["phase_unbalance_metrics"] = _safe_call(has_I, phase_unbalance_metrics, _PHASE_NANS.copy(), Ia, Ib, Ic)
     results["cur_ratio"] = _safe_call(has_I, cur_ratio, NAN, Ia, Ib, Ic)
     results["cur_dev_ratio"] = _safe_call(has_I, cur_dev_ratio, NAN, Ia, Ib, Ic)
     results["neutral_from_trms_120deg"] = _safe_call(has_I, neutral_from_trms_120deg, NAN, Ia, Ib, Ic)

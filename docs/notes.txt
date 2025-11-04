@@ -8,3 +8,6 @@ For the phase loading I should look at the max value from the janitza meters. At
 then there is voltage I would say VUF is one metric but are there others? i dont know maybe read a bit on this one Kai also mention that just looking at the smart meter data here is enough. that could be but why not just use the janitza meters as will and throw them away is needed.
 
 I should sprint and chose metrics then scrap and make some kinda of dashboard maybe with plot and graphs. I also need to make sure I dont need to clean data and I should also get thoses answers from Otto
+
+
+96 og 512 sations mælieftir spennir en hinar mæla 801 stations mæla strengir úr stöð
