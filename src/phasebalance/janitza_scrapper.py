@@ -48,34 +48,10 @@ def _flatten_metrics(metrics_dict, prefix=""):
             flat[key] = v
     return flat
 
-def _compute_stats(json_in1, json_in4): # Remove this 
-    """
-    Align Input01 & Input04 series by startTime and compute:
-      - mean absolute difference (MAD) of avg values over the overlap
-      - ratio = sum(avg_in1) / sum(avg_in4) over the overlap
-    Returns (mad, ratio, n_points) or (None, None, 0) if insufficient overlap.
-    """
-    s1 = _series_from_values(json_in1, "in1")
-    s4 = _series_from_values(json_in4, "in4")
-
-    if s1.empty or s4.empty:
-        return (None, None, 0)
-
-    joined = pd.concat([s1, s4], axis=1, join="inner").dropna()
-    if joined.empty:
-        return (None, None, 0)
-
-    mad = (joined["in1"] - joined["in4"]).abs().mean()
-
-    denom = joined["in4"].sum()
-    ratio = (joined["in1"].sum() / denom) if abs(denom) > 1e-12 else None
-
-    return (float(mad), (float(ratio) if ratio is not None else None), int(len(joined)))
-
-# -------------------- core compute --------------------
 def _compute_metrics_from_json(json_in01=None, json_in02=None, json_in03=None,
                                json_va=None, json_vb=None, json_vc=None,
-                               json_pf_a=None, json_pf_b=None, json_pf_c=None):
+                               json_I0=None, json_I1=None, json_I2=None,
+                               json_V0=None, json_V1=None, json_V2=None):
     """
     Average each series over the window and feed to compute_meter_metrics.
     Any missing input becomes None, and compute_meter_metrics will handle it.
@@ -90,20 +66,23 @@ def _compute_metrics_from_json(json_in01=None, json_in02=None, json_in03=None,
     vb = _avg_from_json(json_vb) if json_vb is not None else None
     vc = _avg_from_json(json_vc) if json_vc is not None else None
 
-    # Power factors — optional if you decide to fetch later
-    pf_a = _avg_from_json(json_pf_a) if json_pf_a is not None else None
-    pf_b = _avg_from_json(json_pf_b) if json_pf_b is not None else None
-    pf_c = _avg_from_json(json_pf_c) if json_pf_c is not None else None
+    # Sequence magnitudes — optional if you decide to fetch later
+    I0_mag = _avg_from_json(json_I0) if json_I0 is not None else None
+    I1_mag = _avg_from_json(json_I1) if json_I1 is not None else None
+    I2_mag = _avg_from_json(json_I2) if json_I2 is not None else None
+    V0_mag = _avg_from_json(json_V0) if json_V0 is not None else None
+    V1_mag = _avg_from_json(json_V1) if json_V1 is not None else None
+    V2_mag = _avg_from_json(json_V2) if json_V2 is not None else None
 
+    
     # Compute metrics (robust to Nones)
     metrics = m.compute_meter_metrics(
         Ia=ia, Ib=ib, Ic=ic,
         Va_mag=va, Vb_mag=vb, Vc_mag=vc,
-        pfA=pf_a, pfB=pf_b, pfC=pf_c,
-        # If you someday add phasors, plug them here as *_phasor
+        I0_mag=I0_mag, I1_mag=I1_mag, I2_mag=I2_mag,
+        V0_mag=V0_mag, V1_mag=V1_mag, V2_mag=V2_mag,
     )
     return metrics
-
 
 def has_capability(cap_df, device_id, **criteria):
     """
@@ -189,16 +168,27 @@ def resolve_channels(cap_df: pd.DataFrame,
 
     return out
 
+def _has_values(js):
+    """True iff js looks like {'values': [...]} and not empty."""
+    return bool(js and isinstance(js, dict) and js.get("values"))
 
+def _safe_fetch(device_id, variable_backend, phase_backend, timebase, start, end):
+    """Fetch and return None if response is missing/empty."""
+    js = fetch_hist_json(
+        device_id=device_id,
+        variable_backend=variable_backend,
+        phase_backend=phase_backend,
+        timebase=timebase,
+        start=start, end=end,
+    )
+    return js if _has_values(js) else None
 
 
 def main():
     # --- config ---
-
     OUT_DIR = "results"
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M")
-    # Construct filename with timestamp
-    filename = f"metrics_results_{timestamp}.csv"
+    filename = f"metrics_results_{timestamp}.csv"  # Construct filename with timestamp
     os.makedirs(OUT_DIR, exist_ok=True)
 
     devices = pd.read_csv("metadata/devices.csv")
@@ -215,73 +205,114 @@ def main():
 
     # What we want to fetch: 3-phase currents with naming fallbacks
     CHANNEL_SPEC_I = {
-        "IA": {"value_backend": "I_Effective", "type_candidates": ["Input01", "L1"]},
-        "IB": {"value_backend": "I_Effective", "type_candidates": ["Input02", "L2"]},
-        "IC": {"value_backend": "I_Effective", "type_candidates": ["Input03", "L3"]},
+        "IA": {"value_backend": "I_Effective", "type_candidates": ["Input01","Input05", "L1"]},
+        "IB": {"value_backend": "I_Effective", "type_candidates": ["Input02","Input06", "L2"]},
+        "IC": {"value_backend": "I_Effective", "type_candidates": ["Input03","Input07", "L3",]},
     }
 
+    CHANNEL_SPEC_V = {
+        "VA": {"value_backend": "U_Effective", "type_candidates": ["Input01","Input05","L1"]},
+        "VB": {"value_backend": "U_Effective", "type_candidates": ["Input02","Input06","L2"]},
+        "VC": {"value_backend": "U_Effective", "type_candidates": ["Input03","Input07","L3"]},
+    }
+
+    CHANNEL_SPEC_I4 = {"IA": {"value_backend": "I_Effective", "type_candidates": ["Input04","Input08","L4"]}}
+
+    CHANNEL_SPEC_SEQ_V = {
+        "V0": {"value_backend": "ZeroPhaseSeq", "type_candidates": ["Overall"]},
+        "V1": {"value_backend": "PositivePhaseSeq", "type_candidates": ["Overall"]},
+        "V2": {"value_backend": "NegativePhaseSeq", "type_candidates": ["Overall"]},
+    }
+
+    CHANNEL_SPEC_SEQ_I = {
+        "I0": {"value_backend": "ZeroPhaseSeq_I", "type_candidates":["Overall","SUM13",]},
+        "I1": {"value_backend": "PositivePhaseSeq_I", "type_candidates": ["Overall","SUM13",]},
+        "I2": {"value_backend": "NegativePhaseSeq_I", "type_candidates": ["Overall","SUM13",]},
+    }
+    
+
     # Filter for devices that have all three resolved channels
-    matches = []  # (did, name, plan)
+    matches = [] # (did, name, planI, planV)
     for _, row in devices.iterrows():
         did  = row["device_id"]
         name = row.get("name", "")
-        plan = resolve_channels(caps, device_id=did, channels=CHANNEL_SPEC_I, require_all=True)
-        if plan:  # only keep full 3-phase devices
-            matches.append((did, name, plan))
+        planI = resolve_channels(caps, device_id=did, channels=CHANNEL_SPEC_I, require_all=True)
+        planV = resolve_channels(caps, device_id=did, channels=CHANNEL_SPEC_V, require_all=True)
+        if planI and planV:
+            matches.append((did, name, planI, planV))
 
-    print(f"\nTotal devices with 3-phase currents: {len(matches)}")
+
+    print(f"\nTotal devices with 3-phase currents AND 3-phase voltages: {len(matches)}")
+
 
     all_rows = []
-    for did, name, plan in matches:
-        # plan looks like:
-        # {"IA":{"value_backend":"I_Effective","type_backend":"Input01" or "L1"}, ...}
+    for did, name, planI, planV in matches:
 
-        pa = plan["IA"]["type_backend"]
-        pb = plan["IB"]["type_backend"]
-        pc = plan["IC"]["type_backend"]
+        # Current channels
+        pa = planI["IA"]["type_backend"]
+        pb = planI["IB"]["type_backend"]
+        pc = planI["IC"]["type_backend"]
+        # Voltage channels
+        pva = planV["VA"]["type_backend"]
+        pvb = planV["VB"]["type_backend"]
+        pvc = planV["VC"]["type_backend"]
 
-        print(f"📡 Fetching data for device {did} ({name}) using phases: "
-              f"A={pa}, B={pb}, C={pc}...")
+        print(f"📡 Fetching device {did} ({name}) | I phases: A={pa},B={pb},C={pc} | V phases: A={pva},B={pvb},C={pvc}")
+        
+        planI4 = resolve_channels(caps, device_id=did, channels=CHANNEL_SPEC_I4, require_all=True)
+        planSeqI = resolve_channels(caps, device_id=did, channels=CHANNEL_SPEC_SEQ_I, require_all=True)
+        planSeqV  = resolve_channels(caps, device_id=did, channels=CHANNEL_SPEC_SEQ_V, require_all=True)
 
-        # --- fetch 3-phase current histories over the window ---
-        data_in01 = fetch_hist_json(
-            device_id=did,
-            variable_backend=plan["IA"]["value_backend"],   # "I_Effective"
-            phase_backend=pa,                                # resolved "Input01" or "L1"
-            timebase=sample_time,
-            start=start,
-            end=end,
-        )
-        data_in02 = fetch_hist_json(
-            device_id=did,
-            variable_backend=plan["IB"]["value_backend"],
-            phase_backend=pb,
-            timebase=sample_time,
-            start=start,
-            end=end,
-        )
-        data_in03 = fetch_hist_json(
-            device_id=did,
-            variable_backend=plan["IC"]["value_backend"],
-            phase_backend=pc,
-            timebase=sample_time,
-            start=start,
-            end=end,
-        )
-        # --- skip if any of the phases returned no data ---
-        if data_in01 is None or data_in02 is None or data_in03 is None:
-            print(f"⚠️ Skipping device {did} ({name}) — missing data in one or more phases.")
+        data_I_eff_in04 = None
+        data_I0 = data_I1 = data_I2 = None
+        data_V0 = data_V1 = data_V2 = None
+
+        if planI4:
+            data_I_eff_in04 = _safe_fetch(did, "I_Effective", planI4["IA"]["type_backend"],
+                                      sample_time, start, end)
+        if planSeqI :
+            data_I0 = _safe_fetch(did, "ZeroPhaseSeq_I",     planSeqI["I0"]["type_backend"], sample_time, start, end)
+            data_I1 = _safe_fetch(did, "PositivePhaseSeq_I", planSeqI["I1"]["type_backend"], sample_time, start, end)
+            data_I2 = _safe_fetch(did, "NegativePhaseSeq_I", planSeqI["I2"]["type_backend"], sample_time, start, end)
+
+        if planSeqV :
+            data_V0 = _safe_fetch(did, "ZeroPhaseSeq",       planSeqV["V0"]["type_backend"], sample_time, start, end)
+            data_V1 = _safe_fetch(did, "PositivePhaseSeq",   planSeqV["V1"]["type_backend"], sample_time, start, end)
+            data_V2 = _safe_fetch(did, "NegativePhaseSeq",   planSeqV["V2"]["type_backend"], sample_time, start, end)
+         
+
+        data_I_eff_in01 = fetch_hist_json(device_id=did,variable_backend=planI["IA"]["value_backend"],phase_backend=pa,timebase=sample_time,start=start,end=end,)
+        data_I_eff_in02 = fetch_hist_json(device_id=did,variable_backend=planI["IB"]["value_backend"],phase_backend=pb,timebase=sample_time,start=start,end=end,)
+        data_I_eff_in03 = fetch_hist_json(device_id=did,variable_backend=planI["IC"]["value_backend"],phase_backend=pc,timebase=sample_time,start=start,end=end,)
+
+        data_U_eff_va = fetch_hist_json(device_id=did,variable_backend=planV["VA"]["value_backend"],phase_backend=pva,timebase=sample_time,start=start, end=end,)
+        data_U_eff_vb = fetch_hist_json(device_id=did,variable_backend=planV["VB"]["value_backend"],phase_backend=pvb,timebase=sample_time,start=start,end=end,)
+        data_U_eff_vc = fetch_hist_json(device_id=did,variable_backend=planV["VC"]["value_backend"],phase_backend=pvc,timebase=sample_time,start=start, end=end,)
+
+
+        # --- skip if any I or V missing ---
+        if (data_I_eff_in01 is None or data_I_eff_in02 is None or data_I_eff_in03 is None or
+            data_U_eff_va is None or data_U_eff_vb is None or data_U_eff_vc is None):
+            print(f"⚠️ Skipping device {did} ({name}) — missing I or V data.")
             continue
 
-        # --- compute metrics from monthly averages ---
+        # --- compute metrics from window averages (I & V) ---
         metrics = _compute_metrics_from_json(
-            json_in01=data_in01, json_in02=data_in02, json_in03=data_in03,
+            json_in01=data_I_eff_in01, json_in02=data_I_eff_in02, json_in03=data_I_eff_in03,
+            json_va=data_U_eff_va, json_vb=data_U_eff_vb, json_vc=data_U_eff_vc,
+            json_I0=data_I0, json_I1=data_I1, json_I2=data_I2,
+            json_V0=data_V0, json_V1=data_V1, json_V2=data_V2,
         )
 
-        # Also store the averaged input currents for traceability
-        ia_avg = _avg_from_json(data_in01)
-        ib_avg = _avg_from_json(data_in02)
-        ic_avg = _avg_from_json(data_in03)
+
+         # Averages for traceability
+        ia_avg = _avg_from_json(data_I_eff_in01)
+        ib_avg = _avg_from_json(data_I_eff_in02)
+        ic_avg = _avg_from_json(data_I_eff_in03)
+        va_avg = _avg_from_json(data_U_eff_va)
+        vb_avg = _avg_from_json(data_U_eff_vb)
+        vc_avg = _avg_from_json(data_U_eff_vc)
+
 
         flat = _flatten_metrics(metrics)
         flat["device_id"]    = did
@@ -292,30 +323,51 @@ def main():
         flat["Ia_avg"]       = ia_avg
         flat["Ib_avg"]       = ib_avg
         flat["Ic_avg"]       = ic_avg
+        flat["Va_avg"]       = va_avg
+        flat["Vb_avg"]       = vb_avg
+        flat["Vc_avg"]       = vc_avg
+
         # record which concrete labels were used
-        flat["Ia_label"]     = pa
-        flat["Ib_label"]     = pb
-        flat["Ic_label"]     = pc
+        flat["Ia_label"] = pa;  flat["Ib_label"] = pb;  flat["Ic_label"] = pc
+        flat["Va_label"] = pva; flat["Vb_label"] = pvb; flat["Vc_label"] = pvc
+
+
+            # optional fields for diagnostics (only if fetched & non-empty)
+        if data_I_eff_in04 is not None:
+            flat["I4_avg"]   = _avg_from_json(data_I_eff_in04)
+            flat["I4_label"] = planI4["IA"]["type_backend"]
+        # if data_I0 is not None: flat["I0_avg"] = _avg_from_json(data_I0)
+        # if data_I1 is not None: flat["I1_avg"] = _avg_from_json(data_I1)
+        # if data_I2 is not None: flat["I2_avg"] = _avg_from_json(data_I2)
+        # if data_V0 is not None: flat["V0_avg"] = _avg_from_json(data_V0)
+        # if data_V1 is not None: flat["V1_avg"] = _avg_from_json(data_V1)
+        # if data_V2 is not None: flat["V2_avg"] = _avg_from_json(data_V2)
+
 
         all_rows.append(flat)
 
-        n1 = len(data_in01.get("values", []))
-        n2 = len(data_in02.get("values", []))
-        n3 = len(data_in03.get("values", []))
-        print(f"✅ Points fetched: {pa}={n1}, {pb}={n2}, {pc}={n3}")
+        nI1 = len(data_I_eff_in01.get("values", []))
+        nI2 = len(data_I_eff_in02.get("values", []))
+        nI3 = len(data_I_eff_in03.get("values", []))
+        nV1 = len(data_U_eff_va.get("values", []))
+        nV2 = len(data_U_eff_vb.get("values", []))
+        nV3 = len(data_U_eff_vc.get("values", []))
+        print(f"✅ Points fetched — I: {pa}={nI1}, {pb}={nI2}, {pc}={nI3} | V: {pva}={nV1}, {pvb}={nV2}, {pvc}={nV3}")
 
-        # polite pause to avoid rate limits
-        time.sleep(10)
+        time.sleep(5)  # be nice to the API
 
-    # --- save results ---
     if not all_rows:
         print("\nNo results to save.")
         return
 
+
     df_out = pd.DataFrame(all_rows)
 
     # stable column order (device info first)
-    front_cols = ["device_id", "name", "window_start", "window_end", "sample_time", "Ia_avg", "Ib_avg", "Ic_avg"]
+    front_cols = [
+        "device_id","name","window_start","window_end","sample_time",
+        "Ia_avg","Ib_avg","Ic_avg","Va_avg","Vb_avg","Vc_avg"
+    ]
     other_cols = [c for c in df_out.columns if c not in front_cols]
     df_out = df_out[front_cols + sorted(other_cols)]
 
