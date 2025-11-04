@@ -117,7 +117,6 @@ def parse_values_json(txt: str, device_row: Dict[str, Any]) -> List[Dict[str, An
         rows.append({
             "device_id": device_row.get("device_id"),
             "dnr_str": device_row.get("dnr_str"),
-            "dnr_num": device_row.get("dnr_num"),
             "feeder": device_row.get("feeder"),
             "phase_device": device_row.get("phase"),
             "device_type": device_row.get("type"),
@@ -175,7 +174,6 @@ def parse_values_xml(txt: str, device_row: Dict[str, Any]) -> List[Dict[str, Any
         rows.append({
             "device_id": device_row.get("device_id"),
             "dnr_str": device_row.get("dnr_str"),
-            "dnr_num": device_row.get("dnr_num"),
             "feeder": device_row.get("feeder"),
             "phase_device": device_row.get("phase"),
             "device_type": device_row.get("type"),
@@ -232,17 +230,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--inventory", default=INVENTORY_CSV,
                    help="Path to devices.csv from janitza_device_fetch.py")
     p.add_argument("--out-dir", default=OUT_DIR, help="Output directory")
-    p.add_argument("--save-raw", action="store_true", default=SAVE_RAW,
-                   help="Save raw per-device response to metadata/raw_capabilities/")
     p.add_argument("--no-save-raw", dest="save_raw", action="store_false")
     p.add_argument("--filter-device-ids", default=None,
                    help="Comma-separated device IDs to include (e.g., '1,2,3').")
-    p.add_argument("--filter-dnr", default=None,
-                   help="Only include devices with this DNR number (e.g., '29').")
     p.add_argument("--limit", type=int, default=None,
                    help="Only process the first N devices after filtering (for testing).")
-    p.add_argument("--resume-skip-existing", action="store_true",
-                   help="Skip fetch if raw file exists for device.")
     p.add_argument("--rps", type=float, default=REQUESTS_PER_SECOND,
                    help="Max requests per second.")
     p.add_argument("--retries", type=int, default=MAX_RETRIES,
@@ -257,10 +249,6 @@ def main():
     out_csv_path = os.path.join(out_dir, OUT_CAP_CSV)
     out_parquet_path = os.path.join(out_dir, OUT_CAP_PARQUET) if OUT_CAP_PARQUET else None
 
-    raw_dir = RAW_CAP_DIR
-    if args.save_raw:
-        raw_dir = raw_dir if os.path.isabs(raw_dir) else os.path.join(out_dir, os.path.basename(raw_dir))
-        ensure_dir(raw_dir)
 
     try:
         inv = pd.read_csv(INVENTORY_CSV, dtype={"dnr_str": "string"})
@@ -272,12 +260,6 @@ def main():
     if args.filter_device_ids:
         keep_ids = {int(x.strip()) for x in args.filter_device_ids.split(",") if x.strip()}
         df = df[df["device_id"].isin(keep_ids)]
-    if args.filter_dnr:
-        try:
-            dnr_num = int(args.filter_dnr)
-            df = df[df["dnr_num"] == dnr_num]
-        except ValueError:
-            print("⚠️ --filter-dnr must be an integer.", file=sys.stderr)
 
     if args.limit:
         df = df.head(args.limit)
@@ -300,22 +282,7 @@ def main():
         # Fetch with retries
         txt: Optional[str] = None
         content_type: str = ""
-        raw_path = None
 
-        # Determine expected raw filename (unknown until we sniff content-type)
-        existing_json = os.path.join(raw_dir, f"{device_id}.json")
-        existing_xml  = os.path.join(raw_dir, f"{device_id}.xml")
-
-        if args.resume_skip_existing and args.save_raw and (os.path.exists(existing_json) or os.path.exists(existing_xml)):
-            # Prefer JSON if present
-            if os.path.exists(existing_json):
-                with open(existing_json, "r", encoding="utf-8") as f:
-                    txt = f.read()
-                content_type = "application/json"
-            else:
-                with open(existing_xml, "r", encoding="utf-8") as f:
-                    txt = f.read()
-                content_type = "application/xml"
 
         if txt is None:
             for attempt in range(1, args.retries + 1):
@@ -330,26 +297,7 @@ def main():
                         print(f"⚠️ Device {device_id}: HTTP error, retrying in {sleep_s:.1f}s... ({attempt}/{args.retries})", file=sys.stderr)
                         time.sleep(sleep_s)
             else:
-                continue  # exhausted retries
-
-        # Save raw (decide extension by sniff)
-        if args.save_raw and txt is not None:
-            is_json = False
-            ct = (content_type or "").lower()
-            if "json" in ct:
-                is_json = True
-            else:
-                s = txt.strip()
-                if s.startswith("{") or s.startswith("["):
-                    is_json = True
-
-            raw_path = os.path.join(raw_dir, f"{device_id}.json" if is_json else f"{device_id}.xml")
-            try:
-                with open(raw_path, "w", encoding="utf-8") as f:
-                    f.write(txt)
-            except OSError as e:
-                print(f"⚠️ Could not save raw for {device_id}: {e}", file=sys.stderr)
-
+                continue
         # Parse capabilities
         rows = parse_values_table_any(txt, content_type, device_row=row.to_dict())
         if not rows:
@@ -375,7 +323,7 @@ def main():
 
 
     ordered_cols = [
-        "device_id", "dnr_str", "dnr_num", "feeder", "phase_device",
+        "device_id", "dnr_str", "feeder", "phase_device",
         "device_type", "device_type_name",
         "value_backend", "value_name", "type_backend", "type_name",
         "unit", "timebase", "online", "measurement_id"
