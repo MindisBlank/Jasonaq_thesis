@@ -268,8 +268,7 @@ def main():
         data_V0 = data_V1 = data_V2 = None
 
         if planI4:
-            data_I_eff_in04 = _safe_fetch(did, "I_Effective", planI4["IA"]["type_backend"],
-                                      sample_time, start, end)
+            data_I_eff_in04 = _safe_fetch(did, "I_Effective", planI4["IA"]["type_backend"],sample_time, start, end)
         if planSeqI :
             data_I0 = _safe_fetch(did, "ZeroPhaseSeq_I",     planSeqI["I0"]["type_backend"], sample_time, start, end)
             data_I1 = _safe_fetch(did, "PositivePhaseSeq_I", planSeqI["I1"]["type_backend"], sample_time, start, end)
@@ -295,6 +294,15 @@ def main():
             data_U_eff_va is None or data_U_eff_vb is None or data_U_eff_vc is None):
             print(f"⚠️ Skipping device {did} ({name}) — missing I or V data.")
             continue
+
+        nI1 = len(data_I_eff_in01.get("values", []))
+        nV1 = len(data_U_eff_va.get("values", []))
+
+        # Make sure the device has sufficient data points sometime the device might only have one point
+        if nI1 <= 10 or nV1 <= 10:
+            print(f"⚠️ Skipping device {did} ({name}) — insufficient data points (I: {nI1}, V: {nV1}).")
+            continue
+
 
         # --- compute metrics from window averages (I & V) ---
         metrics = _compute_metrics_from_json(
@@ -346,13 +354,7 @@ def main():
 
         all_rows.append(flat)
 
-        nI1 = len(data_I_eff_in01.get("values", []))
-        nI2 = len(data_I_eff_in02.get("values", []))
-        nI3 = len(data_I_eff_in03.get("values", []))
-        nV1 = len(data_U_eff_va.get("values", []))
-        nV2 = len(data_U_eff_vb.get("values", []))
-        nV3 = len(data_U_eff_vc.get("values", []))
-        print(f"✅ Points fetched — I: {pa}={nI1}, {pb}={nI2}, {pc}={nI3} | V: {pva}={nV1}, {pvb}={nV2}, {pvc}={nV3}")
+        print(f"✅ Points fetched — I: {nI1}| V: {nV1}")
 
         time.sleep(5)  # be nice to the API
 
