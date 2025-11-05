@@ -23,7 +23,7 @@ except ModuleNotFoundError:
 
 
 # ------------ Config ------------
-DEFAULT_CSV = "results/metrics_results_2025-11-04_2316.csv"
+DEFAULT_CSV = "results/metrics_results_2025-11-05_2224.csv"
 
 # Metrics we explicitly want bar charts for (if present)
 METRICS: List[str] = [
