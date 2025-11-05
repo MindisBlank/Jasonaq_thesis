@@ -65,7 +65,7 @@ def vuf_symmetrical(V0: float, V1: float, V2: float) -> float:
     Calculate the Voltage Unbalance Factor (VUF) directly from sequence component magnitudes.
 
     Formula:
-        VUF = |V_neg| / |V_pos|
+        VUF = |V_neg| / |V_pos|*100
 
     Parameters
     ----------
@@ -75,11 +75,11 @@ def vuf_symmetrical(V0: float, V1: float, V2: float) -> float:
     Returns
     -------
     float
-        Voltage Unbalance Factor (unitless)
+        Voltage Unbalance Factor (percentage)
     """
     if V1 < 1e-9:  # avoid divide-by-zero or noise
         return float("nan")
-    return V2 / V1
+    return (V2 / V1) * 100.0
 
 def sequence_unbalance_factors(I0: float, I1: float, I2: float) -> dict:
     """
