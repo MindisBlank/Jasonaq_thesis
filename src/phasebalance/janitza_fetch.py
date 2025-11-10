@@ -259,7 +259,7 @@ if __name__ == "__main__":
     # Edit these lines to test quickly inside VS Code.
     DEVICE_ID        = 301
     VARIABLE_BACKEND = "I_Effective"
-    PHASE_BACKEND    = "Input04"
+    PHASE_BACKEND    = "Input01"
     TIMEBASE         = "15m"
     START            = "2025-10-01 12:00"
     END              = "2025-10-02 12:00"
