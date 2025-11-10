@@ -23,7 +23,7 @@ except ModuleNotFoundError:
 
 
 # ------------ Config ------------
-DEFAULT_CSV = "results/metrics_results_2025-11-05_2224.csv"
+DEFAULT_CSV = "results/metrics_results_2025-11-10_2307.csv"
 
 # Metrics we explicitly want bar charts for (if present)
 METRICS: List[str] = [
@@ -56,7 +56,7 @@ CANDIDATE_METRICS: List[str] = [
 # ----------- Report configuration -----------
 DEFAULT_THRESHOLDS: Dict[str, float] = {
     "cur_ratio": 30.0,                    # %
-    "cur_dev_ratio": 10.0,                # %
+    "cur_dev_ratio": 25.0,                # %
     "dib": 0.05,                          # pu
     "neutral_from_trms_120deg": 10.0,     # A
     "I4_avg": 10.0,                       # A

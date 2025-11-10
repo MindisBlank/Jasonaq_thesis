@@ -195,8 +195,8 @@ def main():
     caps = pd.read_csv("metadata/capabilities.csv")
 
     sample_time = "15m"
-    start = "2025-09-01 12:00"
-    end = "2025-10-01 12:00"
+    start = "2024-11-01 12:00"
+    end = "2025-11-01 12:00"
 
     # Normalize types
     devices["device_id"] = devices["device_id"].astype(str)
@@ -356,7 +356,7 @@ def main():
 
         print(f"✅ Points fetched — I: {nI1}| V: {nV1}")
 
-        time.sleep(5)  # be nice to the API
+        time.sleep(2)  # be nice to the API
 
     if not all_rows:
         print("\nNo results to save.")

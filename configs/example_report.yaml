@@ -1,0 +1,18 @@
+# ------------------------------ Example config -------------------------------
+# Save as config/example_report.yaml (created automatically on first run)
+#
+# device_id: 301
+# start: "2025-09-01 00:00"
+# end: "2025-10-01 00:00"
+# timebase: "15m"
+# caps_csv: "data/capabilities.csv"
+# outdir: "results"
+# metric: "cur_ratio"  # or: cur_dev_ratio
+# mild: 20.0
+# moderate: 40.0
+# severe: 60.0
+# tau_off_ratio: 0.9
+# gap_merge: 1
+# min_len: 2
+# dpi: 150
+# no_ternary: false
