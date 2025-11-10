@@ -6,6 +6,10 @@ __pycache__/
 # metadata files
 /metadata/
 
+# Logs and reports
+*.log
+results/report*
+
 # C extensions
 *.so
 
