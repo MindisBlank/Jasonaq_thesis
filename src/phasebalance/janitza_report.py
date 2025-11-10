@@ -6,7 +6,7 @@ import argparse
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, Iterable, List, Optional, Tuple
-
+from matplotlib.patches import Circle
 import numpy as np
 import pandas as pd
 
@@ -55,7 +55,7 @@ CANDIDATE_METRICS: List[str] = [
 
 # ----------- Report configuration -----------
 DEFAULT_THRESHOLDS: Dict[str, float] = {
-    "cur_ratio": 10.0,                    # %
+    "cur_ratio": 30.0,                    # %
     "cur_dev_ratio": 10.0,                # %
     "dib": 0.05,                          # pu
     "neutral_from_trms_120deg": 10.0,     # A
@@ -175,6 +175,95 @@ def barplot_by_device(
     csv_path = os.path.join(outdir, f"{metric}_sorted.csv")
     sub.to_csv(csv_path, index=False)
     print(f"Saved data: {csv_path}")
+
+
+def _severity_donut_for_metric(
+    df: pd.DataFrame,
+    metric: str,
+    threshold: float,
+    outdir: str,
+    per_device: bool = True,
+    agg: str = "median",
+    labels: Tuple[str, str, str] = ("Low", "Medium", "High"),
+) -> Optional[str]:
+    """
+    Build a doughnut (pie-with-hole) chart showing severity breakdown for `metric`.
+
+    Bins:
+      Low    : value < 0.5 * threshold
+      Medium : 0.5 * threshold <= value < threshold
+      High   : value >= threshold
+
+    Aggregation per device_id is performed if per_device=True (default), using `agg`
+    (one of: 'median','mean','max','min'). If per_device=False, bins all rows.
+    Returns the saved PNG path or None if skipped.
+    """
+    if plt is None:
+        print("matplotlib not available; skipping severity doughnut.")
+        return None
+    if metric not in df.columns:
+        print(f"[{metric}] not found; skipping severity doughnut.")
+        return None
+
+    # choose the series to bin
+    ser = pd.to_numeric(df[metric], errors="coerce").dropna()
+    if ser.empty:
+        print(f"[{metric}] no numeric values; skipping severity doughnut.")
+        return None
+
+    if per_device and "device_id" in df.columns:
+        g = df.dropna(subset=[metric]).copy()
+        g[metric] = pd.to_numeric(g[metric], errors="coerce")
+        if agg == "median":
+            ser = g.groupby("device_id")[metric].median()
+        elif agg == "mean":
+            ser = g.groupby("device_id")[metric].mean()
+        elif agg == "max":
+            ser = g.groupby("device_id")[metric].max()
+        elif agg == "min":
+            ser = g.groupby("device_id")[metric].min()
+        else:
+            raise ValueError(f"Unsupported agg='{agg}'")
+        ser = ser.dropna()
+
+    if ser.empty:
+        print(f"[{metric}] aggregation produced no data; skipping.")
+        return None
+
+    # define bins
+    low_cut = 0.5 * float(threshold)
+    bins = [float("-inf"), float(low_cut), float(threshold), float("inf")]  # <- plain list
+    vals = ser.astype(float).to_numpy()
+    cats = pd.cut(vals, bins=bins, labels=list(labels), right=False, include_lowest=True)
+
+
+    counts = pd.Series(cats, dtype="category").value_counts().reindex(labels, fill_value=0)
+    counts_np = counts.astype(int).to_numpy()
+    if counts.sum() == 0:
+        print(f"[{metric}] no counts in any bin; skipping.")
+        return None
+
+    # doughnut (pie with center circle)
+    fig, ax = plt.subplots(figsize=(6, 6))
+    ax.pie(
+        counts_np,
+        labels=[f"{lab} ({int(n)})" for lab, n in zip(counts.index, counts_np)],
+        autopct=lambda pct: f"{pct:.1f}%" if pct >= 3 else "",
+        startangle=90,
+    )
+
+    centre_circle = Circle((0, 0), 0.60, fc="white")
+    fig.gca().add_artist(centre_circle)
+    ax.axis("equal")
+    ax.set_title(f"{metric}: severity breakdown ({'per device ' + agg if per_device else 'all rows'})")
+
+    outpath = os.path.join(outdir, f"{metric}_severity_donut.png")
+    plt.tight_layout()
+    plt.savefig(outpath, dpi=150)
+    plt.close(fig)
+    print(f"Saved severity doughnut: {outpath}")
+    return outpath
+
 
 
 def plot_corr_heatmap(
@@ -559,6 +648,19 @@ def run(
         for metric in present_metrics:
             barplot_by_device(df, metric, outdir, top_n=top_n)
         plot_corr_heatmap(df, CANDIDATE_METRICS, outdir, zscore=zscore)
+                # ---- Severity doughnuts for CUR and VUF ----
+        # Use cur_ratio (%) and vuf_magnitude (pu) if present.
+        # Thresholds come from DEFAULT_THRESHOLDS; categories: Low/Medium/High as defined in helper.
+        for key in ("cur_ratio", "vuf_magnitude"):
+            if key in df.columns and key in thresholds:
+                _severity_donut_for_metric(
+                    df=df,
+                    metric=key,
+                    threshold=thresholds[key],
+                    outdir=outdir,
+                    per_device=True,   # classify by device (median across its rows)
+                    agg="median",
+                )
     elif no_plots:
         print("Skipping plots as requested (--no-plots).")
     else:
