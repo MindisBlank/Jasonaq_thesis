@@ -28,17 +28,11 @@ import pandas as pd
 from matplotlib import dates as mdates
 from matplotlib import pyplot as plt
 from matplotlib.collections import LineCollection
-
-try:  # Optional ternary plotting support
-    import mpltern  # type: ignore  # noqa: F401
-
-    MPLTERN_AVAILABLE = True
-except ImportError:  # pragma: no cover - optional dependency
-    MPLTERN_AVAILABLE = False
-
+import mpltern
 from janitza_fetch import fetch_hist_json
 from janitza_scrapper import resolve_channels
-from phase_unbalance_utils import cur_ratio,vuf_magnitude,cur_dev_ratio
+from phase_unbalance_utils import cur_ratio,cur_dev_ratio
+
 CHANNEL_SPEC_I = {
         "IA": {"value_backend": "I_Effective", "type_candidates": ["Input01","Input05", "L1"]},
         "IB": {"value_backend": "I_Effective", "type_candidates": ["Input02","Input06", "L2"]},
@@ -95,36 +89,16 @@ def _series_from_values(obj: object, label: str) -> pd.Series:
     series.index = pd.to_datetime(series.index, unit="ns")
     return series
 
+def _vec_metric(fn, a, b, c):
+    f = np.vectorize(lambda x,y,z: float(fn(float(x), float(y), float(z))))
+    return f(a, b, c)
 
+# culprit in 2 lines
+_CANON = {"IaIb":"Ia-Ib","IbIa":"Ia-Ib","IbIc":"Ib-Ic","IcIb":"Ib-Ic","IcIa":"Ic-Ia","IaIc":"Ic-Ia"}
 def label_culprit_pair(row: pd.Series) -> str:
-    ia, ib, ic = row[["Ia", "Ib", "Ic"]]
-    maxima = max(ia, ib, ic)
-    minima = min(ia, ib, ic)
-
-    # Direct checks with names
-    if math.isclose(maxima, ia) and math.isclose(minima, ib):
-        return "Ia-Ib"
-    if math.isclose(maxima, ib) and math.isclose(minima, ia):
-        return "Ia-Ib"
-    if math.isclose(maxima, ib) and math.isclose(minima, ic):
-        return "Ib-Ic"
-    if math.isclose(maxima, ic) and math.isclose(minima, ib):
-        return "Ib-Ic"
-    if math.isclose(maxima, ic) and math.isclose(minima, ia):
-        return "Ic-Ia"
-    if math.isclose(maxima, ia) and math.isclose(minima, ic):
-        return "Ic-Ia"
-    else:
-            # Fallback using argmax/argmin
-        labels = ["Ia", "Ib", "Ic"]
-        max_label = labels[int(np.argmax([ia, ib, ic]))]
-        min_label = labels[int(np.argmin([ia, ib, ic]))]
-        canonical = {
-            "IaIb": "Ia-Ib", "IbIa": "Ia-Ib",
-            "IbIc": "Ib-Ic", "IcIb": "Ib-Ic",
-            "IcIa": "Ic-Ia", "IaIc": "Ic-Ia",
-        }
-        return canonical.get(max_label + min_label, "Ia-Ib")
+    hi, lo = row[["Ia","Ib","Ic"]].idxmax(), row[["Ia","Ib","Ic"]].idxmin()
+    hi_str, lo_str = str(hi), str(lo)
+    return _CANON.get(hi_str.replace("a","A")+lo_str.replace("a","A"), "Ia-Ib")
 
 
 def _contiguous_indices(mask: pd.Series) -> List[pd.Index]:
@@ -205,9 +179,6 @@ def detect_events(
 
     return merged_events
 
-
-
-
 @dataclass
 class EventRecord:
     start_time: pd.Timestamp
@@ -220,7 +191,6 @@ class EventRecord:
     ib_peak: Any
     ic_peak: Any
     i_sum_peak: Any
-
 
 
 def _compute_sample_delta(timebase: str, index: pd.Index) -> Optional[pd.Timedelta]:
@@ -239,7 +209,6 @@ def _compute_sample_delta(timebase: str, index: pd.Index) -> Optional[pd.Timedel
             return pd.to_timedelta(diffs.median(), unit="ns")
 
     return None
-
 
 
 def summarise_events(
@@ -588,9 +557,6 @@ def plot_ternary(
     dpi: int,
     output_path: str,
 ) -> None:
-    if not MPLTERN_AVAILABLE:
-        logging.info("mpltern not available; skipping ternary plot.")
-        return
 
     valid = df[["Ia", "Ib", "Ic"]].dropna()
     if valid.empty:
@@ -781,13 +747,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     i_max = df[["Ia", "Ib", "Ic"]].max(axis=1)
     i_min = df[["Ia", "Ib", "Ic"]].min(axis=1)
 
-
-    if args.metric == "cur_ratio":
-        df["imbalance"] = df.apply(lambda row: cur_ratio(row["Ia"], row["Ib"], row["Ic"]), axis=1)
-        metric_name = "Current imbalance ratio"
-    else:
-        df["imbalance"] = df.apply(lambda row: cur_dev_ratio(row["Ia"], row["Ib"], row["Ic"]), axis=1)
-        metric_name = "Current deviation ratio"
+    metric_fn = cur_ratio if args.metric == "cur_ratio" else cur_dev_ratio
+    df["imbalance"] = _vec_metric(metric_fn, df["Ia"], df["Ib"], df["Ic"])
+    metric_name = "Current Unbalance Ratio(%)" if args.metric == "cur_ratio" else "Current Deviation Ratio Imbalance (%)"
 
     df["I_sum"] = df[["Ia", "Ib", "Ic"]].sum(axis=1)
     df["I_max"] = i_max
