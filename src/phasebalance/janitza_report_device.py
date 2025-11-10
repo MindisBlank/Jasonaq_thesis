@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#src/phasebalance/janitza_report_device.py
 """Generate an imbalance report for a single Janitza device.
 
 This script fetches three-phase current and voltage time series for a device
@@ -11,7 +11,7 @@ user instructions.
 """
 
 from __future__ import annotations
-
+from typing import Any
 import argparse
 import datetime as dt
 import logging
@@ -21,6 +21,7 @@ import sys
 import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
+from matplotlib.lines import Line2D
 
 import numpy as np
 import pandas as pd
@@ -36,22 +37,21 @@ except ImportError:  # pragma: no cover - optional dependency
     MPLTERN_AVAILABLE = False
 
 from janitza_fetch import fetch_hist_json
-
-
+from janitza_scrapper import resolve_channels
+from phase_unbalance_utils import cur_ratio,vuf_magnitude,cur_dev_ratio
 CHANNEL_SPEC_I = {
-    "IA": {"value_backend": "I_Effective", "type_candidates": ["Input01", "Input05", "L1"]},
-    "IB": {"value_backend": "I_Effective", "type_candidates": ["Input02", "Input06", "L2"]},
-    "IC": {"value_backend": "I_Effective", "type_candidates": ["Input03", "Input07", "L3"]},
-}
+        "IA": {"value_backend": "I_Effective", "type_candidates": ["Input01","Input05", "L1"]},
+        "IB": {"value_backend": "I_Effective", "type_candidates": ["Input02","Input06", "L2"]},
+        "IC": {"value_backend": "I_Effective", "type_candidates": ["Input03","Input07", "L3",]},
+    }
 
 CHANNEL_SPEC_V = {
-    "VA": {"value_backend": "U_Effective", "type_candidates": ["Input01", "Input05", "L1"]},
-    "VB": {"value_backend": "U_Effective", "type_candidates": ["Input02", "Input06", "L2"]},
-    "VC": {"value_backend": "U_Effective", "type_candidates": ["Input03", "Input07", "L3"]},
-}
+        "VA": {"value_backend": "U_Effective", "type_candidates": ["Input01","Input05","L1"]},
+        "VB": {"value_backend": "U_Effective", "type_candidates": ["Input02","Input06","L2"]},
+        "VC": {"value_backend": "U_Effective", "type_candidates": ["Input03","Input07","L3"]},
+    }
 
-PHASE_LABELS = {"Ia": "A", "Ib": "B", "Ic": "C"}
-PAIR_COLORS = {"A-B": "#1b9e77", "B-C": "#d95f02", "C-A": "#7570b3"}
+PAIR_COLORS = {"Ia-Ib": "#1b9e77", "Ib-Ic": "#d95f02", "Ic-Ia": "#7570b3"}
 SEVERITY_COLORS = {
     "mild": "#ccebc5",
     "moderate": "#fdb462",
@@ -66,92 +66,11 @@ def setup_logging() -> None:
         stream=sys.stdout,
     )
 
-
-def resolve_channels(
-    cap_df: pd.DataFrame,
-    device_id: str,
-    channels: Dict[str, Dict[str, Sequence[str]]],
-    require_all: bool = True,
-) -> Dict[str, Dict[str, str]]:
-    """Resolve the value/type backend for each logical channel."""
-
-    resolved: Dict[str, Dict[str, str]] = {}
-    if cap_df.empty:
-        logging.warning("Capabilities dataframe is empty; cannot resolve channels.")
-        return {}
-
-    cap_df = cap_df.copy()
-    cap_df["device_id"] = cap_df["device_id"].astype(str)
-    device_df = cap_df[cap_df["device_id"] == str(device_id)]
-
-    if device_df.empty:
-        logging.warning("No capabilities found for device_id=%s", device_id)
-        return {}
-
-    for key, spec in channels.items():
-        value_backend = spec.get("value_backend")
-        type_candidates = [str(t) for t in spec.get("type_candidates", [])]
-        subset = device_df[device_df["value_backend"].astype(str) == str(value_backend)]
-        chosen: Optional[str] = None
-        for candidate in type_candidates:
-            mask = subset["type_backend"].astype(str).str.lower() == candidate.lower()
-            if mask.any():
-                chosen = subset.loc[mask, "type_backend"].astype(str).iloc[0]
-                break
-        if chosen:
-            resolved[key] = {"value_backend": str(value_backend), "type_backend": chosen}
-        elif require_all:
-            logging.error("Unable to resolve channel %s for device %s", key, device_id)
-            return {}
-        else:
-            logging.warning("Channel %s could not be resolved and will be skipped", key)
-
-    return resolved
-
-
 def _has_values(obj: object) -> bool:
     if not isinstance(obj, dict):
         return False
     vals = obj.get("values")
     return isinstance(vals, list) and len(vals) > 0
-
-
-def _safe_fetch(
-    device_id: str,
-    value_backend: str,
-    type_backend: str,
-    start: str,
-    end: str,
-    timebase: str,
-) -> dict:
-    try:
-        response = fetch_hist_json(
-            device_id=device_id,
-            value_backend=value_backend,
-            type_backend=type_backend,
-            start=start,
-            end=end,
-            timebase=timebase,
-        )
-    except Exception as exc:  # pragma: no cover - network errors
-        logging.error(
-            "Failed to fetch data for device=%s value=%s type=%s: %s",
-            device_id,
-            value_backend,
-            type_backend,
-            exc,
-        )
-        return {}
-
-    if not _has_values(response):
-        logging.warning(
-            "Empty response for device=%s value=%s type=%s",
-            device_id,
-            value_backend,
-            type_backend,
-        )
-    return response
-
 
 def _series_from_values(obj: object, label: str) -> pd.Series:
     vals = obj.get("values", []) if isinstance(obj, dict) else []
@@ -178,35 +97,34 @@ def _series_from_values(obj: object, label: str) -> pd.Series:
 
 
 def label_culprit_pair(row: pd.Series) -> str:
-    maxima = row[["Ia", "Ib", "Ic"]].max()
-    minima = row[["Ia", "Ib", "Ic"]].min()
     ia, ib, ic = row[["Ia", "Ib", "Ic"]]
-    pair: str
+    maxima = max(ia, ib, ic)
+    minima = min(ia, ib, ic)
+
+    # Direct checks with names
     if math.isclose(maxima, ia) and math.isclose(minima, ib):
-        pair = "A-B"
-    elif math.isclose(maxima, ib) and math.isclose(minima, ia):
-        pair = "A-B"
-    elif math.isclose(maxima, ib) and math.isclose(minima, ic):
-        pair = "B-C"
-    elif math.isclose(maxima, ic) and math.isclose(minima, ib):
-        pair = "B-C"
-    elif math.isclose(maxima, ic) and math.isclose(minima, ia):
-        pair = "C-A"
-    elif math.isclose(maxima, ia) and math.isclose(minima, ic):
-        pair = "C-A"
+        return "Ia-Ib"
+    if math.isclose(maxima, ib) and math.isclose(minima, ia):
+        return "Ia-Ib"
+    if math.isclose(maxima, ib) and math.isclose(minima, ic):
+        return "Ib-Ic"
+    if math.isclose(maxima, ic) and math.isclose(minima, ib):
+        return "Ib-Ic"
+    if math.isclose(maxima, ic) and math.isclose(minima, ia):
+        return "Ic-Ia"
+    if math.isclose(maxima, ia) and math.isclose(minima, ic):
+        return "Ic-Ia"
     else:
-        max_label = ["A", "B", "C"][int(np.argmax([ia, ib, ic]))]
-        min_label = ["A", "B", "C"][int(np.argmin([ia, ib, ic]))]
-        canonical_pairs = {
-            "AB": "A-B",
-            "BA": "A-B",
-            "BC": "B-C",
-            "CB": "B-C",
-            "CA": "C-A",
-            "AC": "C-A",
+            # Fallback using argmax/argmin
+        labels = ["Ia", "Ib", "Ic"]
+        max_label = labels[int(np.argmax([ia, ib, ic]))]
+        min_label = labels[int(np.argmin([ia, ib, ic]))]
+        canonical = {
+            "IaIb": "Ia-Ib", "IbIa": "Ia-Ib",
+            "IbIc": "Ib-Ic", "IcIb": "Ib-Ic",
+            "IcIa": "Ic-Ia", "IaIc": "Ic-Ia",
         }
-        pair = canonical_pairs.get(max_label + min_label, "A-B")
-    return pair
+        return canonical.get(max_label + min_label, "Ia-Ib")
 
 
 def _contiguous_indices(mask: pd.Series) -> List[pd.Index]:
@@ -288,6 +206,8 @@ def detect_events(
     return merged_events
 
 
+
+
 @dataclass
 class EventRecord:
     start_time: pd.Timestamp
@@ -295,11 +215,12 @@ class EventRecord:
     duration_h: float
     peak: float
     culprit_pair: str
-    max_delta_I_at_peak: float
-    ia_peak: float
-    ib_peak: float
-    ic_peak: float
-    i_sum_peak: float
+    max_delta_I_at_peak: Any
+    ia_peak: Any
+    ib_peak: Any
+    ic_peak: Any
+    i_sum_peak: Any
+
 
 
 def _compute_sample_delta(timebase: str, index: pd.Index) -> Optional[pd.Timedelta]:
@@ -314,8 +235,11 @@ def _compute_sample_delta(timebase: str, index: pd.Index) -> Optional[pd.Timedel
     if len(index) > 1:
         diffs = index.to_series().diff().dropna()
         if not diffs.empty:
-            return diffs.median()
+            # Convert median float (nanoseconds) back to Timedelta
+            return pd.to_timedelta(diffs.median(), unit="ns")
+
     return None
+
 
 
 def summarise_events(
@@ -349,11 +273,11 @@ def summarise_events(
                 duration_h=duration,
                 peak=float(segment["imbalance"].max()),
                 culprit_pair=str(peak_row["culprit_pair"]),
-                max_delta_I_at_peak=float(peak_row["I_max"] - peak_row["I_min"]),
-                ia_peak=float(peak_row.get("Ia", np.nan)),
-                ib_peak=float(peak_row.get("Ib", np.nan)),
-                ic_peak=float(peak_row.get("Ic", np.nan)),
-                i_sum_peak=float(peak_row.get("I_sum", np.nan)),
+                max_delta_I_at_peak=peak_row["I_max"] - peak_row["I_min"],
+                ia_peak=peak_row.get("Ia", np.nan),
+                ib_peak=peak_row.get("Ib", np.nan),
+                ic_peak=peak_row.get("Ic", np.nan),
+                i_sum_peak=peak_row.get("I_sum", np.nan),
             )
         )
 
@@ -405,7 +329,7 @@ def summarise_bands(
 def plot_colored_cur(
     df: pd.DataFrame,
     thresholds: Dict[str, float],
-    device_id: str,
+    device_id: int,
     metric_name: str,
     start: str,
     end: str,
@@ -419,17 +343,23 @@ def plot_colored_cur(
         mask = df["culprit_pair"] == pair
         for block in _contiguous_indices(mask):
             if len(block) < 2:
-                continue
-            block_times = mdates.date2num(block.to_pydatetime())
-            block_values = df.loc[block, "imbalance"].to_numpy()
-            points = np.column_stack([block_times, block_values])
-            segments = np.stack([points[:-1], points[1:]], axis=1)
+                continue  # need at least two timestamps to draw a segment
+
+            # Ensure DatetimeIndex -> Python datetimes -> matplotlib dates
+            dt_block = pd.DatetimeIndex(block).to_pydatetime()
+            x = mdates.date2num(dt_block)
+            y = df.loc[block, "imbalance"].to_numpy(dtype=float)
+
+            # Build segments as a list of 2-point tuples (type-checker friendly)
+            segments = [((x[i], y[i]), (x[i+1], y[i+1])) for i in range(len(x) - 1)]
+
             lc = LineCollection(segments, colors=color, linewidths=2.0, alpha=0.9)
             ax.add_collection(lc)
 
+
     ax.set_ylabel(f"{metric_name} (%)")
     ax.set_title(
-        f"Device {device_id} – {metric_name} {start} → {end}",
+        f"Device {device_id} - {metric_name} {start} → {end}",
         fontsize=12,
     )
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d\n%H:%M"))
@@ -447,7 +377,7 @@ def plot_colored_cur(
         prev = threshold
     ax.set_ylim(ymin, max(ymax, prev * 1.2))
 
-    handles = [plt.Line2D([0], [0], color=color, lw=2) for color in PAIR_COLORS.values()]
+    handles = [Line2D([0], [0], color=color, lw=2) for color in PAIR_COLORS.values()]
     ax.legend(handles, PAIR_COLORS.keys(), title="Culprit pair", loc="upper right")
     fig.autofmt_xdate()
     fig.tight_layout()
@@ -457,7 +387,7 @@ def plot_colored_cur(
 
 def plot_event_stripes(
     events: Sequence[EventRecord],
-    device_id: str,
+    device_id: int,
     metric_name: str,
     start: str,
     end: str,
@@ -477,7 +407,7 @@ def plot_event_stripes(
         )
         ax.axis("off")
         fig.suptitle(
-            f"Device {device_id} – Events ({metric_name}) {start} → {end}",
+            f"Device {device_id} - Events ({metric_name}) {start} → {end}",
             fontsize=12,
         )
         fig.tight_layout()
@@ -490,20 +420,20 @@ def plot_event_stripes(
     y_positions = np.arange(len(events))
     height = 0.8
     for idx, event in enumerate(events):
-        start_num = mdates.date2num(event.start_time.to_pydatetime())
-        end_num = mdates.date2num(event.end_time.to_pydatetime())
+        start_num = float(mdates.date2num(event.start_time.to_pydatetime()))
+        end_num = float(mdates.date2num(event.end_time.to_pydatetime()))
         if sample_delta is not None:
-            end_num += sample_delta.total_seconds() / (24 * 3600)
-        width = end_num - start_num
+            end_num += float(sample_delta.total_seconds() / (24 * 3600))
+        width = float(end_num - start_num)
         ax.broken_barh(
             [(start_num, width)],
-            (y_positions[idx] - height / 2.0, height),
+            (float(y_positions[idx] - height / 2.0), float(height)),
             facecolors=PAIR_COLORS.get(event.culprit_pair, "#999999"),
             alpha=0.8,
         )
         ax.text(
             start_num,
-            y_positions[idx],
+            float(y_positions[idx]),
             f"{event.peak:.1f}%",
             va="center",
             ha="left",
@@ -514,7 +444,7 @@ def plot_event_stripes(
     ax.set_yticklabels([f"Evt {i+1}" for i in range(len(events))])
     ax.set_xlabel("Time")
     ax.set_title(
-        f"Device {device_id} – Events ({metric_name}) {start} → {end}",
+        f"Device {device_id} - Events ({metric_name}) {start} → {end}",
         fontsize=12,
     )
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d\n%H:%M"))
@@ -526,7 +456,7 @@ def plot_event_stripes(
 
 def plot_severity_duration_scatter(
     events: Sequence[EventRecord],
-    device_id: str,
+    device_id: int,
     metric_name: str,
     dpi: int,
     output_path: str,
@@ -535,7 +465,7 @@ def plot_severity_duration_scatter(
     if not events:
         ax.text(0.5, 0.5, "No events detected", ha="center", va="center", fontsize=12)
         ax.set_axis_off()
-        fig.suptitle(f"Severity vs Duration – Device {device_id}")
+        fig.suptitle(f"Severity vs Duration - Device {device_id}")
         fig.tight_layout()
         fig.savefig(output_path, bbox_inches="tight")
         plt.close(fig)
@@ -552,7 +482,7 @@ def plot_severity_duration_scatter(
 
     ax.set_xlabel("Duration (hours)")
     ax.set_ylabel(f"Peak {metric_name} (%)")
-    ax.set_title(f"Severity vs Duration – Device {device_id}")
+    ax.set_title(f"Severity vs Duration - Device {device_id}")
     ax.grid(True, linestyle=":", linewidth=0.5, alpha=0.6)
     ax.legend(title="Culprit pair")
     fig.tight_layout()
@@ -562,12 +492,13 @@ def plot_severity_duration_scatter(
 
 def plot_diurnal_heatmap(
     df: pd.DataFrame,
-    device_id: str,
+    device_id: int,
     metric_name: str,
     dpi: int,
     output_path: str,
 ) -> None:
     data = df.copy()
+    data.index = pd.DatetimeIndex(data.index)
     data["hour"] = data.index.hour
     data["weekday"] = data.index.dayofweek
     pivot = data.pivot_table(index="weekday", columns="hour", values="imbalance", aggfunc="median")
@@ -576,7 +507,7 @@ def plot_diurnal_heatmap(
         fig, ax = plt.subplots(figsize=(8, 3), dpi=dpi)
         ax.text(0.5, 0.5, "Insufficient data", ha="center", va="center", fontsize=12)
         ax.axis("off")
-        fig.suptitle(f"Diurnal imbalance heatmap – Device {device_id}")
+        fig.suptitle(f"Diurnal imbalance heatmap - Device {device_id}")
         fig.tight_layout()
         fig.savefig(output_path, bbox_inches="tight")
         plt.close(fig)
@@ -591,7 +522,7 @@ def plot_diurnal_heatmap(
     ax.set_yticklabels([weekdays[i] for i in pivot.index])
     ax.set_xlabel("Hour of day")
     ax.set_ylabel("Weekday")
-    ax.set_title(f"Diurnal imbalance heatmap – Device {device_id}")
+    ax.set_title(f"Diurnal imbalance heatmap - Device {device_id}")
     cbar = fig.colorbar(im, ax=ax)
     cbar.set_label(f"Median {metric_name} (%)")
     fig.tight_layout()
@@ -603,7 +534,7 @@ def plot_exceedance_and_taat(
     series: pd.Series,
     thresholds: Dict[str, float],
     metrics: Dict[str, float],
-    device_id: str,
+    device_id: int,
     metric_name: str,
     dpi: int,
     output_path: str,
@@ -612,7 +543,7 @@ def plot_exceedance_and_taat(
         fig, ax = plt.subplots(figsize=(8, 3), dpi=dpi)
         ax.text(0.5, 0.5, "No data", ha="center", va="center", fontsize=12)
         ax.axis("off")
-        fig.suptitle(f"Device {device_id} – {metric_name}")
+        fig.suptitle(f"Device {device_id} - {metric_name}")
         fig.tight_layout()
         fig.savefig(output_path, bbox_inches="tight")
         plt.close(fig)
@@ -645,7 +576,7 @@ def plot_exceedance_and_taat(
     ax2.set_ylabel("Hours")
     ax2.set_title("TAAT by severity")
     ax2.legend()
-    fig.suptitle(f"Device {device_id} – {metric_name}")
+    fig.suptitle(f"Device {device_id} - {metric_name}")
     fig.tight_layout()
     fig.savefig(output_path, bbox_inches="tight")
     plt.close(fig)
@@ -653,7 +584,7 @@ def plot_exceedance_and_taat(
 
 def plot_ternary(
     df: pd.DataFrame,
-    device_id: str,
+    device_id: int,
     dpi: int,
     output_path: str,
 ) -> None:
@@ -666,30 +597,37 @@ def plot_ternary(
         logging.info("No data for ternary plot.")
         return
 
-    totals = valid.sum(axis=1)
-    totals = totals.replace(0, np.nan)
+    totals = valid.sum(axis=1).replace(0, np.nan)
     normalized = valid.divide(totals, axis=0).dropna()
     if normalized.empty:
         logging.info("No valid normalized current data for ternary plot.")
         return
 
+    # --- Convert to numpy arrays (Pylance-friendly) ---
+    x = normalized["Ia"].to_numpy(dtype=float)
+    y = normalized["Ib"].to_numpy(dtype=float)
+    z = normalized["Ic"].to_numpy(dtype=float)
+
+    # Build colors aligned to normalized index
+    pairs = df.loc[normalized.index, "culprit_pair"].astype(str).tolist()
+    colors = [PAIR_COLORS.get(p, "#999999") for p in pairs]
+
     fig = plt.figure(figsize=(6, 6), dpi=dpi)
-    ax = fig.add_subplot(111, projection="ternary")
-    ax.scatter(
-        normalized["Ia"],
-        normalized["Ib"],
-        normalized["Ic"],
-        c=[PAIR_COLORS.get(pair, "#999999") for pair in df.loc[normalized.index, "culprit_pair"]],
-        alpha=0.6,
-        s=10,
-    )
-    ax.set_tlabel("Ia fraction")
-    ax.set_llabel("Ib fraction")
-    ax.set_rlabel("Ic fraction")
-    ax.set_title(f"Ternary current balance – Device {device_id}")
+    ax = fig.add_subplot(111, projection="ternary")  # type: ignore[arg-type]
+
+    # Pylance sometimes complains about mpltern's scatter signature; this is fine at runtime.
+    size = 10.0
+    ax.scatter(x, y, z, c=colors, alpha=0.6, s=size)  # type: ignore[call-arg]
+
+    # Use getattr to safely call ternary-axis label setters so static type-checkers don't flag unknown attributes.
+    getattr(ax, "set_tlabel", lambda *args, **kwargs: None)("Ia fraction")
+    getattr(ax, "set_llabel", lambda *args, **kwargs: None)("Ib fraction")
+    getattr(ax, "set_rlabel", lambda *args, **kwargs: None)("Ic fraction")
+    ax.set_title(f"Ternary current balance - Device {device_id}")
     fig.tight_layout()
     fig.savefig(output_path, bbox_inches="tight")
     plt.close(fig)
+
 
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
@@ -723,7 +661,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 
 
 def fetch_time_series(
-    device_id: str,
+    device_id: int,
     start: str,
     end: str,
     timebase: str,
@@ -732,16 +670,34 @@ def fetch_time_series(
     sleep_s: float = 0.0,
 ) -> Dict[str, pd.Series]:
     series_map: Dict[str, pd.Series] = {}
+
     for key, info in resolved_channels.items():
-        value_backend = info["value_backend"]
-        type_backend = info["type_backend"]
+        value_backend = info["value_backend"]   # we'll map this to variable_backend
+        type_backend = info["type_backend"]     # we'll map this to phase_backend
         label = labels.get(key, key)
-        response = _safe_fetch(device_id, value_backend, type_backend, start, end, timebase)
-        series = _series_from_values(response, label=label)
-        series_map[key] = series
+
+        # ✅ call with KEYWORDS and the CORRECT parameter names
+        response = fetch_hist_json(
+            device_id=device_id,
+            variable_backend=value_backend,
+            phase_backend=type_backend,
+            timebase=timebase,
+            start=start,
+            end=end,
+        )
+
+        # Handle no data (fetcher returns None) or empty JSON (no "values")
+        if not response or not _has_values(response):
+            # keep an empty, correctly named series so later concat doesn’t break
+            series_map[key] = pd.Series(dtype=float, name=label)
+        else:
+            series_map[key] = _series_from_values(response, label=label)
+
         if sleep_s > 0:
             time.sleep(sleep_s)
+
     return series_map
+
 
 
 def assemble_dataframe(series_map: Dict[str, pd.Series]) -> pd.DataFrame:
@@ -760,9 +716,9 @@ def assemble_dataframe(series_map: Dict[str, pd.Series]) -> pd.DataFrame:
     return df
 
 
-def ensure_output_directory(base_outdir: str, device_id: str) -> str:
+def ensure_output_directory(base_outdir: str, device_id: int) -> str:
     timestamp = dt.datetime.now().strftime("%Y-%m-%d_%H%M")
-    path = os.path.join(base_outdir, f"device_{device_id}_{timestamp}")
+    path = os.path.join(base_outdir, f"report_device_{device_id}_{timestamp}")
     os.makedirs(path, exist_ok=True)
     return path
 
@@ -771,7 +727,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     setup_logging()
     args = parse_args(argv)
 
-    device_id = str(args.device_id)
+    device_id = int(args.device_id)
     start = args.start
     end = args.end
     timebase = args.timebase
@@ -782,12 +738,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         logging.error("Failed to read capabilities CSV: %s", exc)
         return 1
 
-    current_channels = resolve_channels(cap_df, device_id, CHANNEL_SPEC_I, require_all=True)
+    current_channels = resolve_channels(cap_df, str(device_id), CHANNEL_SPEC_I, require_all=True)
     if not current_channels:
         logging.error("Currents could not be resolved for device %s. Aborting.", device_id)
         return 1
 
-    voltage_channels = resolve_channels(cap_df, device_id, CHANNEL_SPEC_V, require_all=False)
+    voltage_channels = resolve_channels(cap_df, str(device_id), CHANNEL_SPEC_V, require_all=False)
 
     labels = {
         "IA": "Ia",
@@ -821,22 +777,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if col in df.columns:
             df[col] = df[col].astype(float)
 
-    mean_currents = df[["Ia", "Ib", "Ic"]].mean(axis=1)
+
     i_max = df[["Ia", "Ib", "Ic"]].max(axis=1)
     i_min = df[["Ia", "Ib", "Ic"]].min(axis=1)
-    eps = 1e-6
+
 
     if args.metric == "cur_ratio":
-        df["imbalance"] = 100.0 * (i_max - i_min) / np.maximum(mean_currents, eps)
+        df["imbalance"] = df.apply(lambda row: cur_ratio(row["Ia"], row["Ib"], row["Ic"]), axis=1)
         metric_name = "Current imbalance ratio"
     else:
-        df["imbalance"] = 100.0 * df[["Ia", "Ib", "Ic"]].std(axis=1) / np.maximum(mean_currents, eps)
+        df["imbalance"] = df.apply(lambda row: cur_dev_ratio(row["Ia"], row["Ib"], row["Ic"]), axis=1)
         metric_name = "Current deviation ratio"
 
     df["I_sum"] = df[["Ia", "Ib", "Ic"]].sum(axis=1)
     df["I_max"] = i_max
     df["I_min"] = i_min
-    df["dominant_phase"] = df[["Ia", "Ib", "Ic"]].idxmax(axis=1).map(lambda x: PHASE_LABELS.get(x, ""))
+    df["dominant_phase"] = df[["Ia", "Ib", "Ic"]].idxmax(axis=1)
     df["culprit_pair"] = df.apply(label_culprit_pair, axis=1)
 
     df = df.dropna(subset=["Ia", "Ib", "Ic", "imbalance"])
@@ -957,13 +913,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 
 def print_summary(
-    device_id: str,
+    device_id: int,
     metric_name: str,
     metrics: Dict[str, float],
     thresholds: Dict[str, float],
 ) -> None:
     lines = [
-        f"Device {device_id} – {metric_name}",
+        f"Device {device_id} - {metric_name}",
         f"Peak: {metrics.get('overall_peak', float('nan')):.2f}%",
         f"P95: {metrics.get('overall_p95', float('nan')):.2f}%",
         f"P99: {metrics.get('overall_p99', float('nan')):.2f}%",
