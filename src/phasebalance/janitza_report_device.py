@@ -1,8 +1,8 @@
 # src/phasebalance/janitza_report_device.py
 """Generate an imbalance report for a single Janitza device.
 
-This script fetches three‑phase current and voltage time series for a device
-from the Janitza REST API, computes per‑timestep imbalance metrics, detects
+This script fetches three-phase current and voltage time series for a device
+from the Janitza REST API, computes per-timestep imbalance metrics, detects
 events, summarises them, and produces diagnostics (plots + CSVs).
 
 Notes
@@ -13,10 +13,8 @@ Notes
   - cur_ratio, cur_dev_ratio
 """
 from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
-
 import argparse
 import datetime as dt
 import logging
@@ -24,7 +22,6 @@ import math
 import os
 import sys
 import time
-
 import numpy as np
 import pandas as pd
 from matplotlib import dates as mdates
@@ -34,8 +31,7 @@ from matplotlib.lines import Line2D
 import mpltern  # noqa: F401 — used by plot_ternary
 
 from janitza_fetch import fetch_hist_json
-from janitza_scrapper import resolve_channels
-from phase_unbalance_utils import cur_ratio, cur_dev_ratio
+from phase_unbalance_utils import cur_ratio, cur_dev_ratio, _series_from_values,_has_values,resolve_channels
 
 # ---------------------------- Config & Constants -----------------------------
 CHANNEL_SPEC_I = {
@@ -63,19 +59,6 @@ METRIC_FNS = {
 
 def setup_logging() -> None:
     logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s", stream=sys.stdout)
-
-
-def _has_values(obj: object) -> bool:
-    return isinstance(obj, dict) and isinstance(obj.get("values"), list) and len(obj["values"]) > 0
-
-
-def _series_from_values(obj: object, label: str) -> pd.Series:
-    vals = obj.get("values", []) if isinstance(obj, dict) else []
-    data = {int(v["startTime"]): float(v["avg"]) for v in vals if isinstance(v, dict) and v.get("startTime") is not None and v.get("avg") is not None}
-    s = pd.Series(dtype=float, name=label) if not data else pd.Series(data, name=label).sort_index()
-    if not s.empty:
-        s.index = pd.to_datetime(s.index, unit="ns")
-    return s
 
 
 def _vec_metric(fn, a, b, c):
@@ -388,7 +371,6 @@ def plot_ternary(df: pd.DataFrame, device_id: int, dpi: int, output_path: str) -
     ax.set_title(f"Ternary current balance - Device {device_id}")
     fig.tight_layout(); fig.savefig(output_path, bbox_inches="tight"); plt.close(fig)
 
-
 # ------------------------------ IO & orchestration ---------------------------
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
@@ -430,7 +412,7 @@ def fetch_time_series(
             start=start,
             end=end,
         )
-        out[key] = _series_from_values(resp, label=labels.get(key, key)) if resp and _has_values(resp) else pd.Series(dtype=float, name=labels.get(key, key))
+        out[key] = _series_from_values(resp, labels.get(key, key)) if resp and _has_values(resp) else pd.Series(dtype=float, name=labels.get(key, key))
         if sleep_s > 0:
             time.sleep(sleep_s)
     return out
