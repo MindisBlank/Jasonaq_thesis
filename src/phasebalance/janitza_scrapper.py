@@ -6,31 +6,10 @@ import phase_unbalance_utils as m
 import os
 from datetime import datetime
 
-def _series_from_values(obj, label):
-    """
-    Turn {"values":[{"startTime":ns, "avg":x}, ...]} into a pandas Series
-    indexed by startTime (ns) with the 'avg' value. label is only for naming.
-    """
-    vals = obj.get("values", []) if isinstance(obj, dict) else []
-    data = {}
-    for v in vals:
-        st = v.get("startTime")
-        avg = v.get("avg")
-        if st is None or avg is None:
-            continue
-        try:
-            data[int(st)] = float(avg)
-        except (TypeError, ValueError):
-            continue
-    if not data:
-        return pd.Series(dtype=float, name=label)
-    s = pd.Series(data).sort_index()
-    s.name = label
-    return s
 
 def _avg_from_json(obj):
     """Return the average of the 'avg' column over the whole window."""
-    s = _series_from_values(obj, label="tmp")
+    s = m._series_from_values(obj,"avg")
     return float(s.mean()) if not s.empty else None
 
 def _flatten_metrics(metrics_dict, prefix=""):
@@ -168,9 +147,6 @@ def resolve_channels(cap_df: pd.DataFrame,
 
     return out
 
-def _has_values(js):
-    """True iff js looks like {'values': [...]} and not empty."""
-    return bool(js and isinstance(js, dict) and js.get("values"))
 
 def _safe_fetch(device_id, variable_backend, phase_backend, timebase, start, end):
     """Fetch and return None if response is missing/empty."""
@@ -181,7 +157,125 @@ def _safe_fetch(device_id, variable_backend, phase_backend, timebase, start, end
         timebase=timebase,
         start=start, end=end,
     )
-    return js if _has_values(js) else None
+    return js if m._has_values(js) else None
+
+def compute_metrics_from_json_on_the_fly(
+    json_in01=None, json_in02=None, json_in03=None,
+    json_va=None, json_vb=None, json_vc=None,
+    json_I0=None, json_I1=None, json_I2=None,
+    json_V0=None, json_V1=None, json_V2=None,
+):
+    """
+    Compute metrics 'per instant' (per timestamp) using scalar inputs, then
+    average the resulting metrics over time. Returns a nested dict with the
+    SAME structure as m.compute_meter_metrics, but whose values are the
+    time-averaged metrics.
+
+    Notes
+    -----
+    - Missing inputs at a given timestamp are passed as None.
+    - Only numeric metric values are averaged; non-numeric are ignored.
+    - If a metric is never numeric across the window, it returns None.
+    """
+
+    # 1) Build series for each json (indexed by startTime ns)
+    s_Ia = m._series_from_values(json_in01, "Ia")
+    s_Ib = m._series_from_values(json_in02, "Ib")
+    s_Ic = m._series_from_values(json_in03, "Ic")
+
+    s_Va = m._series_from_values(json_va, "Va")
+    s_Vb = m._series_from_values(json_vb, "Vb")
+    s_Vc = m._series_from_values(json_vc, "Vc")
+
+    s_I0 = m._series_from_values(json_I0, "I0")
+    s_I1 = m._series_from_values(json_I1, "I1")
+    s_I2 = m._series_from_values(json_I2, "I2")
+
+    s_V0 = m._series_from_values(json_V0, "V0")
+    s_V1 = m._series_from_values(json_V1, "V1")
+    s_V2 = m._series_from_values(json_V2, "V2")
+
+    # 2) Align on the union of timestamps (outer join), keep as DataFrame
+    df = pd.concat(
+        [
+            s_Ia, s_Ib, s_Ic,
+            s_Va, s_Vb, s_Vc,
+            s_I0, s_I1, s_I2,
+            s_V0, s_V1, s_V2,
+        ],
+        axis=1,
+    )
+
+    if df.empty:
+        # Nothing to compute -> ask compute_meter_metrics with all None (lets it decide),
+        # or just return an empty dict. Using all-None keeps structure stable.
+        return m.compute_meter_metrics(
+            Ia=None, Ib=None, Ic=None,
+            Va_mag=None, Vb_mag=None, Vc_mag=None,
+            I0_mag=None, I1_mag=None, I2_mag=None,
+            V0_mag=None, V1_mag=None, V2_mag=None,
+        )
+
+    df = df.sort_index()
+
+    # 3) Helper: recursively average a list of metric dicts into one dict (same shape)
+    def _numeric_mean(vals):
+        import math
+        nums = [v for v in vals if isinstance(v, (int, float)) and not math.isnan(v)]
+        return float(sum(nums) / len(nums)) if nums else None
+
+    def _merge_avg(dicts):
+        """
+        dicts: list of nested dicts with identical key shape (keys may be
+        missing in some entries). Returns a single dict with numeric means.
+        """
+        out = {}
+        # Collect all keys present anywhere
+        keys = set().union(*[d.keys() for d in dicts if isinstance(d, dict)])
+        for k in keys:
+            # Gather all values for this key
+            vs = [d.get(k, None) for d in dicts if isinstance(d, dict)]
+            # If these are dict-like, recurse
+            if any(isinstance(v, dict) for v in vs):
+                child_dicts = [v for v in vs if isinstance(v, dict)]
+                out[k] = _merge_avg(child_dicts) if child_dicts else {}
+            else:
+                # Average numeric values; ignore None/non-numeric
+                out[k] = _numeric_mean(vs)
+        return out
+
+    # 4) Iterate per timestamp; feed scalars to compute_meter_metrics
+    metric_dicts = []
+    for _, row in df.iterrows():
+        metrics_t = m.compute_meter_metrics(
+            Ia=(None if pd.isna(row.get("Ia")) else float(row.get("Ia"))),
+            Ib=(None if pd.isna(row.get("Ib")) else float(row.get("Ib"))),
+            Ic=(None if pd.isna(row.get("Ic")) else float(row.get("Ic"))),
+            Va_mag=(None if pd.isna(row.get("Va")) else float(row.get("Va"))),
+            Vb_mag=(None if pd.isna(row.get("Vb")) else float(row.get("Vb"))),
+            Vc_mag=(None if pd.isna(row.get("Vc")) else float(row.get("Vc"))),
+            I0_mag=(None if pd.isna(row.get("I0")) else float(row.get("I0"))),
+            I1_mag=(None if pd.isna(row.get("I1")) else float(row.get("I1"))),
+            I2_mag=(None if pd.isna(row.get("I2")) else float(row.get("I2"))),
+            V0_mag=(None if pd.isna(row.get("V0")) else float(row.get("V0"))),
+            V1_mag=(None if pd.isna(row.get("V1")) else float(row.get("V1"))),
+            V2_mag=(None if pd.isna(row.get("V2")) else float(row.get("V2"))),
+        )
+        # Keep only dicts (some implementations could return None on fully-missing)
+        if isinstance(metrics_t, dict):
+            metric_dicts.append(metrics_t)
+
+    if not metric_dicts:
+        # Nothing computed; return all-None structure
+        return m.compute_meter_metrics(
+            Ia=None, Ib=None, Ic=None,
+            Va_mag=None, Vb_mag=None, Vc_mag=None,
+            I0_mag=None, I1_mag=None, I2_mag=None,
+            V0_mag=None, V1_mag=None, V2_mag=None,
+        )
+
+    # 5) Average across time, preserving nested structure
+    return _merge_avg(metric_dicts)
 
 
 def main():
@@ -195,8 +289,8 @@ def main():
     caps = pd.read_csv("metadata/capabilities.csv")
 
     sample_time = "15m"
-    start = "2024-11-01 12:00"
-    end = "2025-11-01 12:00"
+    start = "2025-09-01 12:00"
+    end = "2025-09-02 12:00"
 
     # Normalize types
     devices["device_id"] = devices["device_id"].astype(str)
@@ -303,7 +397,7 @@ def main():
             print(f"⚠️ Skipping device {did} ({name}) — insufficient data points (I: {nI1}, V: {nV1}).")
             continue
 
-
+        print(f" CALCULATING METRICS NOW ")
         # --- compute metrics from window averages (I & V) ---
         metrics = _compute_metrics_from_json(
             json_in01=data_I_eff_in01, json_in02=data_I_eff_in02, json_in03=data_I_eff_in03,
@@ -344,19 +438,13 @@ def main():
         if data_I_eff_in04 is not None:
             flat["I4_avg"]   = _avg_from_json(data_I_eff_in04)
             flat["I4_label"] = planI4["IA"]["type_backend"]
-        # if data_I0 is not None: flat["I0_avg"] = _avg_from_json(data_I0)
-        # if data_I1 is not None: flat["I1_avg"] = _avg_from_json(data_I1)
-        # if data_I2 is not None: flat["I2_avg"] = _avg_from_json(data_I2)
-        # if data_V0 is not None: flat["V0_avg"] = _avg_from_json(data_V0)
-        # if data_V1 is not None: flat["V1_avg"] = _avg_from_json(data_V1)
-        # if data_V2 is not None: flat["V2_avg"] = _avg_from_json(data_V2)
 
 
         all_rows.append(flat)
 
         print(f"✅ Points fetched — I: {nI1}| V: {nV1}")
 
-        time.sleep(2)  # be nice to the API
+        time.sleep(0.1)  # be nice to the API
 
     if not all_rows:
         print("\nNo results to save.")
