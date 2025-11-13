@@ -13,10 +13,8 @@ Notes
   - cur_ratio, cur_dev_ratio
 """
 from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
-
 import argparse
 import datetime as dt
 import logging
@@ -24,7 +22,6 @@ import math
 import os
 import sys
 import time
-
 import numpy as np
 import pandas as pd
 from matplotlib import dates as mdates
@@ -34,8 +31,7 @@ from matplotlib.lines import Line2D
 import mpltern  # noqa: F401 — used by plot_ternary
 
 from janitza_fetch import fetch_hist_json
-from janitza_scrapper import resolve_channels
-from phase_unbalance_utils import cur_ratio, cur_dev_ratio, _series_from_values,_has_values
+from phase_unbalance_utils import cur_ratio, cur_dev_ratio, _series_from_values,_has_values,resolve_channels
 
 # ---------------------------- Config & Constants -----------------------------
 CHANNEL_SPEC_I = {
@@ -374,7 +370,6 @@ def plot_ternary(df: pd.DataFrame, device_id: int, dpi: int, output_path: str) -
     getattr(ax, "set_rlabel", lambda *_: None)("Ic fraction")
     ax.set_title(f"Ternary current balance - Device {device_id}")
     fig.tight_layout(); fig.savefig(output_path, bbox_inches="tight"); plt.close(fig)
-
 
 # ------------------------------ IO & orchestration ---------------------------
 

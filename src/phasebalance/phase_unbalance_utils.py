@@ -61,7 +61,62 @@ def _has_values(obj: object) -> bool:
         and len(obj["values"]) > 0
     )
 
+def resolve_channels(cap_df: pd.DataFrame,
+                     device_id: str,
+                     channels: dict,
+                     require_all: bool = True) -> dict:
+    """
+    Resolve the (value_backend, type_backend) to use for each logical channel.
 
+    channels: dict of
+      channel_key -> {
+         "value_backend": "<exact string>",          # e.g., "I_Effective"
+         "type_candidates": [list of exact strings], # priority order, e.g., ["Input01","L1"]
+      }
+
+    Returns:
+      {
+        channel_key: {"value_backend": "...", "type_backend": "<chosen candidate>"},
+        ...
+      }
+      If require_all=True and any channel can't be resolved, returns {}.
+    """
+    cap = cap_df.copy()
+    cap["device_id"] = cap["device_id"].astype(str)
+    did = str(device_id)
+
+    # Get only rows for this device
+    dev_rows = cap[cap["device_id"] == did]
+    if dev_rows.empty:
+        return {}
+
+    out = {}
+    for key, spec in channels.items():
+        value_backend = str(spec["value_backend"])
+        candidates = [str(c) for c in spec.get("type_candidates", [])]
+
+        # Filter to rows with matching value_backend
+        pool = dev_rows[dev_rows["value_backend"].astype(str) == value_backend]
+        if pool.empty:
+            if require_all:
+                return {}
+            continue
+
+        # Pick first matching candidate
+        chosen = None
+        for cand in candidates:
+            if not pool[pool["type_backend"].astype(str) == cand].empty:
+                chosen = cand
+                break
+
+        if chosen is None:
+            if require_all:
+                return {}
+            continue
+
+        out[key] = {"value_backend": value_backend, "type_backend": chosen}
+
+    return out
 
 
 # ---------- NaN constants ----------
