@@ -11,12 +11,119 @@ some inputs are missing.
 import cmath
 import math
 from typing import Optional, Dict, Any
+import pandas as pd
+
+# ---------- Helper functions----------
+def _series_from_values(obj, label_or_which="avg", *, convert_ts=True):
+    """
+    Backwards-compatible:
+    - If label_or_which is one of ("avg","min","max"), treat it as the field to extract.
+    - Otherwise treat it as a label (old behaviour) and extract "avg".
+    """
+
+    # Detect old vs new usage
+    if label_or_which in ("avg", "min", "max"):
+        which = label_or_which
+        label = label_or_which
+    else:
+        which = "avg"
+        label = label_or_which
+
+    vals = obj.get("values", []) if isinstance(obj, dict) else []
+    data = {}
+
+    for v in vals:
+        st = v.get("startTime")
+        val = v.get(which)
+        if st is None or val is None:
+            continue
+        try:
+            data[int(st)] = float(val)
+        except (TypeError, ValueError):
+            continue
+
+    if not data:
+        return pd.Series(dtype=float, name=label)
+
+    s = pd.Series(data).sort_index()
+
+    # Optional conversion
+    if convert_ts:
+        s.index = pd.to_datetime(s.index, unit="ns", utc=True)
+
+    s.name = label
+    return s
+
+def _has_values(obj: object) -> bool:
+    return (
+        isinstance(obj, dict)
+        and isinstance(obj.get("values"), list)
+        and len(obj["values"]) > 0
+    )
+
+def resolve_channels(cap_df: pd.DataFrame,
+                     device_id: str,
+                     channels: dict,
+                     require_all: bool = True) -> dict:
+    """
+    Resolve the (value_backend, type_backend) to use for each logical channel.
+
+    channels: dict of
+      channel_key -> {
+         "value_backend": "<exact string>",          # e.g., "I_Effective"
+         "type_candidates": [list of exact strings], # priority order, e.g., ["Input01","L1"]
+      }
+
+    Returns:
+      {
+        channel_key: {"value_backend": "...", "type_backend": "<chosen candidate>"},
+        ...
+      }
+      If require_all=True and any channel can't be resolved, returns {}.
+    """
+    cap = cap_df.copy()
+    cap["device_id"] = cap["device_id"].astype(str)
+    did = str(device_id)
+
+    # Get only rows for this device
+    dev_rows = cap[cap["device_id"] == did]
+    if dev_rows.empty:
+        return {}
+
+    out = {}
+    for key, spec in channels.items():
+        value_backend = str(spec["value_backend"])
+        candidates = [str(c) for c in spec.get("type_candidates", [])]
+
+        # Filter to rows with matching value_backend
+        pool = dev_rows[dev_rows["value_backend"].astype(str) == value_backend]
+        if pool.empty:
+            if require_all:
+                return {}
+            continue
+
+        # Pick first matching candidate
+        chosen = None
+        for cand in candidates:
+            if not pool[pool["type_backend"].astype(str) == cand].empty:
+                chosen = cand
+                break
+
+        if chosen is None:
+            if require_all:
+                return {}
+            continue
+
+        out[key] = {"value_backend": value_backend, "type_backend": chosen}
+
+    return out
+
 
 # ---------- NaN constants ----------
 NAN = float("nan")
 CNAN = complex(float("nan"), float("nan"))
 
-# ---------- Default NaN dictionaries ----------
+# ---------- metrics ----------
 _SEQ_NANS = {
     "M2_mag": NAN,
     "M0_mag": NAN,
