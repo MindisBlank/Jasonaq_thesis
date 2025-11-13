@@ -1,37 +1,15 @@
 #!/usr/bin/env python3
 # janitza_plot_multi_phase.py
 
+import argparse
 import json
-from typing import Iterable, Dict, Optional, Tuple
+from pathlib import Path
+from typing import Dict, Iterable, Optional, Sequence, Tuple
+
 import pandas as pd
 import matplotlib.pyplot as plt
 from janitza_fetch import fetch_hist_json
-
-
-def _series_from_values(payload: Dict, which: str = "avg") -> pd.Series:
-    """
-    Convert {"values":[{"startTime":ns, "avg":x, ...}, ...]} to a pandas Series
-    indexed by UTC timestamps with the chosen statistic (avg|min|max).
-    """
-    vals = payload.get("values", []) if isinstance(payload, dict) else []
-    data = {}
-    for v in vals:
-        st = v.get("startTime")
-        val = v.get(which)
-        if st is None or val is None:
-            continue
-        try:
-            data[int(st)] = float(val)
-        except (TypeError, ValueError):
-            continue
-    if not data:
-        return pd.Series(dtype=float, name=which)
-
-    s = pd.Series(data).sort_index()
-    # Convert Unix ns → UTC datetime index
-    s.index = pd.to_datetime(s.index, unit="ns", utc=True)
-    s.name = which
-    return s
+from phase_unbalance_utils import _series_from_values, resolve_channels
 
 
 def fetch_phase_series(
@@ -222,31 +200,159 @@ def plot_multi_phase_multi_device(
     return fig, ax, df
 
 
-if __name__ == "__main__":
-    # Example: two Janitza devices at one substation, aggregate per phase
-    # plot_multi_phase_multi_device(
-    #     device_ids=(301, 309),         # ← put your two device_ids here
-    #     name="D0613 total",
-    #     variable_backend="I_Effective",
-    #     phases=("Input01", "Input02", "Input03"),  # or ("L1","L2","L3")
-    #     timebase="15m",
-    #     start="2025-10-21 12:00",
-    #     end="2025-10-27 12:00",
-    #     which="avg",
-    #     auth_token=None,
-    #     combine="sum",                  # "sum" or "mean"
-    #     show=True,
-    # )
+def _load_metadata(devices_csv: Path, capabilities_csv: Optional[Path]) -> tuple[pd.DataFrame, Optional[pd.DataFrame]]:
+    """Load devices and optional capabilities metadata.
 
-    plot_multi_phase(
-        device_id=133,
-        name="D0537",
-        variable_backend="I_Effective",
-        phases=("L1", "L2", "L3"),   # ← change to ("Input01","Input02","Input03") if your currents are on inputs
-        timebase="10m",
-        start="2025-10-21 12:00",
-        end="2025-10-27 12:00",
-        which="avg",
-        auth_token=None,
-        show=True,
+    Parameters
+    ----------
+    devices_csv
+        Path to `devices.csv` metadata file.
+    capabilities_csv
+        Path to `capabilities.csv` metadata file. If ``None`` or missing, only the
+        devices table is returned.
+    """
+
+    devices = pd.read_csv(devices_csv)
+    caps: Optional[pd.DataFrame] = None
+    if capabilities_csv is not None and Path(capabilities_csv).exists():
+        caps = pd.read_csv(capabilities_csv)
+    return devices, caps
+
+
+def _devices_for_dnr(devices: pd.DataFrame, dnr_str: str) -> pd.DataFrame:
+    """Filter the devices table for a specific ``dnr_str``."""
+
+    if "dnr_str" not in devices.columns:
+        raise KeyError("devices.csv must contain a 'dnr_str' column")
+    mask = devices["dnr_str"].astype(str).str.fullmatch(str(dnr_str))
+    return devices.loc[mask].copy()
+
+
+def _phases_for_measurement(
+    capabilities: Optional[pd.DataFrame],
+    device_ids: Sequence[int | str],
+    value_backend: str,
+) -> list[str]:
+    """Infer the list of phase/type_backend channels for the given measurement."""
+
+    default_currents = ["L1", "L2", "L3"]
+    default_inputs = ["Input01", "Input02", "Input03"]
+
+    if capabilities is None or capabilities.empty:
+        return default_currents if "I_" in value_backend else default_inputs
+
+    caps = capabilities.copy()
+    if "device_id" not in caps.columns or "value_backend" not in caps.columns:
+        return default_currents if "I_" in value_backend else default_inputs
+
+    caps["device_id"] = caps["device_id"].astype(str)
+    device_ids_str = {str(did) for did in device_ids}
+
+    phase_candidates: dict[str, dict[str, str]] = {}
+    caps["value_backend"] = caps["value_backend"].astype(str)
+
+    for did in device_ids_str:
+        subset = caps[
+            (caps["device_id"] == did)
+            & (caps["value_backend"] == str(value_backend))
+        ]
+        type_candidates = subset["type_backend"].dropna().astype(str).tolist()
+        spec = {
+            f"{value_backend}_{idx}": {
+                "value_backend": value_backend,
+                "type_candidates": [candidate],
+            }
+            for idx, candidate in enumerate(type_candidates)
+        }
+        resolved = resolve_channels(caps, device_id=did, channels=spec, require_all=False)
+        for plan in resolved.values():
+            phase = plan.get("type_backend")
+            if phase:
+                phase_candidates.setdefault(phase, plan)
+
+    if not phase_candidates:
+        return default_currents if "I_" in value_backend else default_inputs
+
+    return sorted(phase_candidates.keys())
+
+
+def plot_substation_measurement(
+    *,
+    dnr_str: str,
+    value_backend: str,
+    devices_csv: Path = Path("metadata/devices.csv"),
+    capabilities_csv: Optional[Path] = Path("metadata/capabilities.csv"),
+    timebase: int | str = "15m",
+    start: str = "2025-10-01 00:00",
+    end: str = "2025-10-02 00:00",
+    which: str = "avg",
+    auth_token: Optional[str] = None,
+    combine: str = "sum",
+    show: bool = True,
+):
+    """Plot a measurement for all devices that belong to a substation.
+
+    This function looks up all ``device_id`` rows in ``devices.csv`` that share the
+    given ``dnr_str`` (substation identifier). It then infers the appropriate phases
+    (channels) for ``value_backend`` using ``capabilities.csv`` when available and
+    finally delegates to :func:`plot_multi_phase_multi_device` to fetch and plot the
+    data.
+    """
+
+    devices, caps = _load_metadata(devices_csv, capabilities_csv)
+    substation_devices = _devices_for_dnr(devices, dnr_str)
+    if substation_devices.empty:
+        raise ValueError(f"No devices found for dnr_str '{dnr_str}'.")
+
+    device_ids = substation_devices["device_id"].tolist()
+    phases = _phases_for_measurement(caps, device_ids, value_backend)
+
+    title = f"Substation {dnr_str}"
+    return plot_multi_phase_multi_device(
+        device_ids=device_ids,
+        name=title,
+        variable_backend=value_backend,
+        phases=phases,
+        timebase=timebase,
+        start=start,
+        end=end,
+        which=which,
+        auth_token=auth_token,
+        combine=combine,
+        show=show,
+    )
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Plot Janitza measurements for an entire substation.")
+    parser.add_argument("dnr_str", help="Substation identifier (dnr_str) as listed in devices.csv")
+    parser.add_argument("value_backend", help="Measurement backend variable, e.g. I_Effective")
+    parser.add_argument("--devices-csv", default="metadata/devices.csv", help="Path to devices metadata CSV")
+    parser.add_argument(
+        "--capabilities-csv",
+        default="metadata/capabilities.csv",
+        help="Path to capabilities metadata CSV (optional)",
+    )
+    parser.add_argument("--timebase", default="15m", help="Time bucket size for the fetch requests")
+    parser.add_argument("--start", default="2025-10-01 00:00", help="Start timestamp (UTC) for the window")
+    parser.add_argument("--end", default="2025-10-02 00:00", help="End timestamp (UTC) for the window")
+    parser.add_argument("--which", default="avg", choices=["avg", "min", "max"], help="Statistic to plot from the API")
+    parser.add_argument("--combine", default="sum", choices=["sum", "mean"], help="How to combine multiple devices per phase")
+    parser.add_argument("--auth-token", default=None, help="API auth token (overrides environment)")
+    parser.add_argument("--no-show", action="store_true", help="Fetch data without displaying the plot")
+
+    args = parser.parse_args()
+
+    plot_substation_measurement(
+        dnr_str=args.dnr_str,
+        value_backend=args.value_backend,
+        devices_csv=Path(args.devices_csv),
+        capabilities_csv=Path(args.capabilities_csv) if args.capabilities_csv else None,
+        timebase=args.timebase,
+        start=args.start,
+        end=args.end,
+        which=args.which,
+        auth_token=args.auth_token,
+        combine=args.combine,
+        show=not args.no_show,
     )
