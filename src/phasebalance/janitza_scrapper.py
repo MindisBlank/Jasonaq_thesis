@@ -1,3 +1,4 @@
+#src/phasebalance/janitza_scrapper.py
 import pandas as pd
 from janitza_fetch import fetch_hist_json
 import time
@@ -89,64 +90,6 @@ def has_capability(cap_df, device_id, **criteria):
             return False
 
     return not df.empty
-
-def resolve_channels(cap_df: pd.DataFrame,
-                     device_id: str,
-                     channels: dict,
-                     require_all: bool = True) -> dict:
-    """
-    Resolve the (value_backend, type_backend) to use for each logical channel.
-
-    channels: dict of
-      channel_key -> {
-         "value_backend": "<exact string>",          # e.g., "I_Effective"
-         "type_candidates": [list of exact strings], # priority order, e.g., ["Input01","L1"]
-      }
-
-    Returns:
-      {
-        channel_key: {"value_backend": "...", "type_backend": "<chosen candidate>"},
-        ...
-      }
-      If require_all=True and any channel can't be resolved, returns {}.
-    """
-    cap = cap_df.copy()
-    cap["device_id"] = cap["device_id"].astype(str)
-    did = str(device_id)
-
-    # Get only rows for this device
-    dev_rows = cap[cap["device_id"] == did]
-    if dev_rows.empty:
-        return {}
-
-    out = {}
-    for key, spec in channels.items():
-        value_backend = str(spec["value_backend"])
-        candidates = [str(c) for c in spec.get("type_candidates", [])]
-
-        # Filter to rows with matching value_backend
-        pool = dev_rows[dev_rows["value_backend"].astype(str) == value_backend]
-        if pool.empty:
-            if require_all:
-                return {}
-            continue
-
-        # Pick first matching candidate
-        chosen = None
-        for cand in candidates:
-            if not pool[pool["type_backend"].astype(str) == cand].empty:
-                chosen = cand
-                break
-
-        if chosen is None:
-            if require_all:
-                return {}
-            continue
-
-        out[key] = {"value_backend": value_backend, "type_backend": chosen}
-
-    return out
-
 
 def _safe_fetch(device_id, variable_backend, phase_backend, timebase, start, end):
     """Fetch and return None if response is missing/empty."""
@@ -277,7 +220,6 @@ def compute_metrics_from_json_on_the_fly(
     # 5) Average across time, preserving nested structure
     return _merge_avg(metric_dicts)
 
-
 def main():
     # --- config ---
     OUT_DIR = "results"
@@ -330,8 +272,8 @@ def main():
     for _, row in devices.iterrows():
         did  = row["device_id"]
         name = row.get("name", "")
-        planI = resolve_channels(caps, device_id=did, channels=CHANNEL_SPEC_I, require_all=True)
-        planV = resolve_channels(caps, device_id=did, channels=CHANNEL_SPEC_V, require_all=True)
+        planI = m.resolve_channels(caps, device_id=did, channels=CHANNEL_SPEC_I, require_all=True)
+        planV = m.resolve_channels(caps, device_id=did, channels=CHANNEL_SPEC_V, require_all=True)
         if planI and planV:
             matches.append((did, name, planI, planV))
 
@@ -353,9 +295,9 @@ def main():
 
         print(f"📡 Fetching device {did} ({name}) | I phases: A={pa},B={pb},C={pc} | V phases: A={pva},B={pvb},C={pvc}")
         
-        planI4 = resolve_channels(caps, device_id=did, channels=CHANNEL_SPEC_I4, require_all=True)
-        planSeqI = resolve_channels(caps, device_id=did, channels=CHANNEL_SPEC_SEQ_I, require_all=True)
-        planSeqV  = resolve_channels(caps, device_id=did, channels=CHANNEL_SPEC_SEQ_V, require_all=True)
+        planI4 = m.resolve_channels(caps, device_id=did, channels=CHANNEL_SPEC_I4, require_all=True)
+        planSeqI = m.resolve_channels(caps, device_id=did, channels=CHANNEL_SPEC_SEQ_I, require_all=True)
+        planSeqV  = m.resolve_channels(caps, device_id=did, channels=CHANNEL_SPEC_SEQ_V, require_all=True)
 
         data_I_eff_in04 = None
         data_I0 = data_I1 = data_I2 = None

@@ -6,32 +6,7 @@ from typing import Iterable, Dict, Optional, Tuple
 import pandas as pd
 import matplotlib.pyplot as plt
 from janitza_fetch import fetch_hist_json
-
-
-def _series_from_values(payload: Dict, which: str = "avg") -> pd.Series:
-    """
-    Convert {"values":[{"startTime":ns, "avg":x, ...}, ...]} to a pandas Series
-    indexed by UTC timestamps with the chosen statistic (avg|min|max).
-    """
-    vals = payload.get("values", []) if isinstance(payload, dict) else []
-    data = {}
-    for v in vals:
-        st = v.get("startTime")
-        val = v.get(which)
-        if st is None or val is None:
-            continue
-        try:
-            data[int(st)] = float(val)
-        except (TypeError, ValueError):
-            continue
-    if not data:
-        return pd.Series(dtype=float, name=which)
-
-    s = pd.Series(data).sort_index()
-    # Convert Unix ns → UTC datetime index
-    s.index = pd.to_datetime(s.index, unit="ns", utc=True)
-    s.name = which
-    return s
+from phase_unbalance_utils import _has_values, _series_from_values
 
 
 def fetch_phase_series(
