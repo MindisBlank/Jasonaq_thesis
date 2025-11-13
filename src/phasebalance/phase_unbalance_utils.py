@@ -11,12 +11,64 @@ some inputs are missing.
 import cmath
 import math
 from typing import Optional, Dict, Any
+import pandas as pd
+
+# ---------- Helper functions----------
+def _series_from_values(obj, label_or_which="avg", *, convert_ts=True):
+    """
+    Backwards-compatible:
+    - If label_or_which is one of ("avg","min","max"), treat it as the field to extract.
+    - Otherwise treat it as a label (old behaviour) and extract "avg".
+    """
+
+    # Detect old vs new usage
+    if label_or_which in ("avg", "min", "max"):
+        which = label_or_which
+        label = label_or_which
+    else:
+        which = "avg"
+        label = label_or_which
+
+    vals = obj.get("values", []) if isinstance(obj, dict) else []
+    data = {}
+
+    for v in vals:
+        st = v.get("startTime")
+        val = v.get(which)
+        if st is None or val is None:
+            continue
+        try:
+            data[int(st)] = float(val)
+        except (TypeError, ValueError):
+            continue
+
+    if not data:
+        return pd.Series(dtype=float, name=label)
+
+    s = pd.Series(data).sort_index()
+
+    # Optional conversion
+    if convert_ts:
+        s.index = pd.to_datetime(s.index, unit="ns", utc=True)
+
+    s.name = label
+    return s
+
+def _has_values(obj: object) -> bool:
+    return (
+        isinstance(obj, dict)
+        and isinstance(obj.get("values"), list)
+        and len(obj["values"]) > 0
+    )
+
+
+
 
 # ---------- NaN constants ----------
 NAN = float("nan")
 CNAN = complex(float("nan"), float("nan"))
 
-# ---------- Default NaN dictionaries ----------
+# ---------- metrics ----------
 _SEQ_NANS = {
     "M2_mag": NAN,
     "M0_mag": NAN,

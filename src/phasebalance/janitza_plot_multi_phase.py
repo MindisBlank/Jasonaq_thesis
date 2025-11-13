@@ -239,8 +239,8 @@ if __name__ == "__main__":
     # )
 
     plot_multi_phase(
-        device_id=133,
-        name="D0537",
+        device_id=369,
+        name="D1390",
         variable_backend="I_Effective",
         phases=("L1", "L2", "L3"),   # ← change to ("Input01","Input02","Input03") if your currents are on inputs
         timebase="10m",
