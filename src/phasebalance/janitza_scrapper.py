@@ -64,33 +64,6 @@ def _compute_metrics_from_json(json_in01=None, json_in02=None, json_in03=None,
     )
     return metrics
 
-def has_capability(cap_df, device_id, **criteria):
-    """
-    Return True/False if the given device_id has at least one row
-    in cap_df matching all non-None criteria.
-    Example:
-        has_capability(cap, 301, value_backend="I_Effective", type_backend="Input01")
-    """
-    #This is really slow condsider making it better later
-    # Normalize device_id column to string for safe comparison
-    cap_df = cap_df.copy()
-    cap_df["device_id"] = cap_df["device_id"].astype(str)
-    device_id = str(device_id)
-
-    df = cap_df[cap_df["device_id"] == device_id]
-    if df.empty:
-        return False
-
-    # Apply all criteria (ignore None)
-    for col, val in criteria.items():
-        if val is None or col not in df.columns:
-            continue
-        df = df[df[col].astype(str).str.contains(str(val), regex=True, na=False)]
-        if df.empty:
-            return False
-
-    return not df.empty
-
 def _safe_fetch(device_id, variable_backend, phase_backend, timebase, start, end):
     """Fetch and return None if response is missing/empty."""
     js = fetch_hist_json(
