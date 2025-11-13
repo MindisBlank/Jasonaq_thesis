@@ -61,25 +61,51 @@ def _has_values(obj: object) -> bool:
         and len(obj["values"]) > 0
     )
 
-def resolve_channels(cap_df: pd.DataFrame,
-                     device_id: str,
-                     channels: dict,
-                     require_all: bool = True) -> dict:
+def resolve_channels(
+    cap_df: pd.DataFrame,
+    device_id: str,
+    channels: dict,
+    require_all: bool = True,
+    return_all: bool = False,
+) -> dict:
     """
     Resolve the (value_backend, type_backend) to use for each logical channel.
 
-    channels: dict of
-      channel_key -> {
-         "value_backend": "<exact string>",          # e.g., "I_Effective"
-         "type_candidates": [list of exact strings], # priority order, e.g., ["Input01","L1"]
-      }
+    Parameters
+    ----------
+    cap_df : DataFrame
+        Capabilities table with at least columns: device_id, value_backend, type_backend.
+    device_id : str
+        The device_id whose channels we are resolving.
+    channels : dict
+        Mapping:
+          channel_key -> {
+             "value_backend": "<exact string>",          # e.g., "I_Effective"
+             "type_candidates": [list of exact strings], # priority order, e.g., ["Input01","L1"]
+          }
+    require_all : bool, default True
+        If True, and any channel can't be resolved, returns {}.
+    return_all : bool, default False
+        If False (default): for each key picks a single 'best' type_backend, the first
+        candidate that exists, preserving the old behaviour.
 
-    Returns:
-      {
-        channel_key: {"value_backend": "...", "type_backend": "<chosen candidate>"},
-        ...
-      }
-      If require_all=True and any channel can't be resolved, returns {}.
+        If True: for each key returns all matching candidates in priority order in
+        a list under "type_backends", and also sets "type_backend" to the first one
+        for backward compatibility.
+
+    Returns
+    -------
+    dict
+        {
+          channel_key: {
+              "value_backend": "...",
+              "type_backend": "<chosen candidate>",
+              # if return_all=True:
+              # "type_backends": ["cand1", "cand2", ...],
+          },
+          ...
+        }
+        If require_all=True and any channel can't be resolved, returns {}.
     """
     cap = cap_df.copy()
     cap["device_id"] = cap["device_id"].astype(str)
@@ -90,7 +116,7 @@ def resolve_channels(cap_df: pd.DataFrame,
     if dev_rows.empty:
         return {}
 
-    out = {}
+    out: dict[str, dict] = {}
     for key, spec in channels.items():
         value_backend = str(spec["value_backend"])
         candidates = [str(c) for c in spec.get("type_candidates", [])]
@@ -102,21 +128,31 @@ def resolve_channels(cap_df: pd.DataFrame,
                 return {}
             continue
 
-        # Pick first matching candidate
-        chosen = None
+        # Collect all matching candidates, in priority order
+        matched: list[str] = []
         for cand in candidates:
             if not pool[pool["type_backend"].astype(str) == cand].empty:
-                chosen = cand
-                break
+                matched.append(cand)
 
-        if chosen is None:
+        if not matched:
             if require_all:
                 return {}
             continue
 
-        out[key] = {"value_backend": value_backend, "type_backend": chosen}
+        # Backwards-compatible: always keep a single 'type_backend' (first match)
+        entry = {
+            "value_backend": value_backend,
+            "type_backend": matched[0],
+        }
+
+        # Optionally include ALL matches
+        if return_all:
+            entry["type_backends"] = matched
+
+        out[key] = entry
 
     return out
+
 
 
 # ---------- NaN constants ----------
