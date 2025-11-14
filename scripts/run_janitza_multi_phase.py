@@ -31,17 +31,8 @@ except Exception:  # pragma: no cover - PyYAML is optional
 _REPO_ROOT = _Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in _sys.path:
     _sys.path.insert(0, str(_REPO_ROOT))
-
-try:
-    from src.phasebalance.janitza_plot_multi_phase import plot_substation_measurement as _plot_substation
-except ModuleNotFoundError as exc:  # pragma: no cover - import guard
-    missing = exc.name or str(exc)
-    print(
-        "❌ Missing dependency while importing janitza_plot_multi_phase:"
-        f" {missing}. Did you install the project requirements?"
-    )
-    print("   Try `pip install -r req.txt` or ensure your environment has the needed packages.")
-    raise SystemExit(1) from exc
+    
+from src.phasebalance.janitza_plot_multi_phase import plot_substation_measurement as _plot_substation
 
 _DEF_CFG = "configs/example_multi_phase.yaml"
 

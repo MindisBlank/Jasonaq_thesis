@@ -8,8 +8,13 @@ from typing import Dict, Iterable, Optional, Sequence, Tuple
 
 import pandas as pd
 import matplotlib.pyplot as plt
-from janitza_fetch import fetch_hist_json
-from phase_unbalance_utils import _series_from_values, resolve_channels
+try:
+    from .janitza_fetch import fetch_hist_json
+    from .phase_unbalance_utils import _series_from_values, resolve_channels
+except ImportError:  # pragma: no cover - for running as a script
+    from janitza_fetch import fetch_hist_json
+    from phase_unbalance_utils import _series_from_values, resolve_channels
+
 
 
 
