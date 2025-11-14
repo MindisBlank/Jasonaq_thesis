@@ -458,7 +458,7 @@ def plot_substation_measurement(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Plot Janitza measurements for an entire substation.")
-    parser.add_argument("--dnr_str",default="D1398", help="Substation identifier (dnr_str) as listed in devices.csv")
+    parser.add_argument("--dnr_str",default="D0579", help="Substation identifier (dnr_str) as listed in devices.csv")
     parser.add_argument("--value_backend",default="I_Effective", help="Measurement backend variable, e.g. I_Effective")
     parser.add_argument("--profile",default="3phase_I",choices=["3phase_I", "neutral_I", "sum13_Iseq"],help="Which channel profile to plot: " "3phase_I = IA/IB/IC total, neutral_I = neutral current, " "sum13_Iseq = sequence currents (I0/I1/I2 from SUM13/Overall)",)
     parser.add_argument("--devices-csv", default="metadata/devices.csv", help="Path to devices metadata CSV")
