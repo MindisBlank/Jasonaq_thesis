@@ -324,6 +324,10 @@ def plot_substation_measurement(
         Uses CHANNEL_SPEC_I and plots three lines: IA, IB, IC.
         Each line is the sum/mean of the corresponding phase across all devices.
 
+    profile = "3phase_I_all"
+        Same as ``3phase_I`` but after combining, IA+IB+IC are summed into a
+        single "I_total" line.
+
     profile = "neutral_I"
         Uses CHANNEL_SPEC_I4 and plots a single line: IA (neutral total).
 
@@ -366,7 +370,7 @@ def plot_substation_measurement(
     caps["device_id"] = caps["device_id"].astype(str)
 
     # --- Choose which spec to use based on profile ---
-    if profile == "3phase_I":
+    if profile in {"3phase_I", "3phase_I_all"}:
         channel_spec = CHANNEL_SPEC_I
     elif profile == "neutral_I":
         channel_spec = CHANNEL_SPEC_I4
@@ -439,6 +443,10 @@ def plot_substation_measurement(
 
     # --- Combine across devices (sum or mean per phase) ---
     df = _combine_phase_series(phase_to_series_list, how=combine)
+    if profile == "3phase_I_all" and not df.empty:
+        df = pd.DataFrame({
+            "I_total": df.sum(axis=1, skipna=True)
+        }).dropna(how="all")
     if df.empty:
         print(f"❌ No data to plot for substation {dnr_str} (profile={profile}).")
         return None, None, pd.DataFrame()
@@ -465,7 +473,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Plot Janitza measurements for an entire substation.")
     parser.add_argument("--dnr_str",default="D0579", help="Substation identifier (dnr_str) as listed in devices.csv")
     parser.add_argument("--value_backend",default="I_Effective", help="Measurement backend variable, e.g. I_Effective")
-    parser.add_argument("--profile",default="3phase_I",choices=["3phase_I", "neutral_I", "sum13_Iseq"],help="Which channel profile to plot: " "3phase_I = IA/IB/IC total, neutral_I = neutral current, " "sum13_Iseq = sequence currents (I0/I1/I2 from SUM13/Overall)",)
+    parser.add_argument("--profile",default="3phase_I",choices=["3phase_I", "3phase_I_all", "neutral_I", "sum13_Iseq"],help="Which channel profile to plot: " "3phase_I = IA/IB/IC total, 3phase_I_all = total current, neutral_I = neutral current, " "sum13_Iseq = sequence currents (I0/I1/I2 from SUM13/Overall)",)
     parser.add_argument("--devices-csv", default="metadata/devices.csv", help="Path to devices metadata CSV")
     parser.add_argument("--capabilities-csv",default="metadata/capabilities.csv",help="Path to capabilities metadata CSV (optional)",)
     parser.add_argument("--timebase", default="15m", help="Time bucket size for the fetch requests")
