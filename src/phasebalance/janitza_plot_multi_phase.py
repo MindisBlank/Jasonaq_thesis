@@ -5,7 +5,7 @@ import argparse
 import json
 from pathlib import Path
 from typing import Dict, Iterable, Optional, Sequence, Tuple
-
+from datetime import datetime
 import pandas as pd
 import matplotlib.pyplot as plt
 try:
@@ -66,6 +66,30 @@ def fetch_phase_series(
     if s.empty:
         print(f"⚠️  device {device_id} phase {phase_backend}: no data in window.")
     return s.rename(phase_backend), payload
+
+def load_unique_dnr_str(devices_csv: Path) -> list[str]:
+    """
+    Read devices.csv and return a sorted list of distinct dnr_str values,
+    e.g. ['D0029', 'D0074', 'D0411', ...].
+    """
+    df = pd.read_csv(devices_csv)
+
+    if "dnr_str" not in df.columns:
+        raise ValueError(
+            f"'dnr_str' column not found in {devices_csv}. "
+            f"Available columns: {list(df.columns)}"
+        )
+
+    dnr_list = (
+        df["dnr_str"]
+        .astype(str)
+        .str.strip()
+        .dropna()
+        .drop_duplicates()
+        .sort_values()
+        .tolist()
+    )
+    return dnr_list
 
 
 def plot_multi_phase(
@@ -469,6 +493,72 @@ def plot_substation_measurement(
     return fig, ax, df
 
 
+def fetch_substation_timeseries(
+    *,
+    dnr_str: str,
+    value_backend: str = "I_Effective",
+    devices_csv: Path = Path("metadata/devices.csv"),
+    capabilities_csv: Optional[Path] = Path("metadata/capabilities.csv"),
+    timebase: int | str = "15m",
+    start: str = "2025-10-01 00:00",
+    end: str = "2025-10-02 00:00",
+    which: str = "avg",
+    auth_token: Optional[str] = None,
+    combine: str = "sum",
+    profile: str = "3phase_I",
+) -> pd.DataFrame:
+    """
+    Fetch combined Janitza currents for one substation as a tidy DataFrame.
+
+    Returns a DataFrame with:
+      ts, I_a, I_b, I_c, I_total
+
+    (If no data, returns an empty DataFrame.)
+    """
+    _, _, df = plot_substation_measurement(
+        dnr_str=dnr_str,
+        value_backend=value_backend,
+        devices_csv=devices_csv,
+        capabilities_csv=capabilities_csv,
+        timebase=timebase,
+        start=start,
+        end=end,
+        which=which,
+        auth_token=auth_token,
+        combine=combine,
+        show=False,           # ← do NOT open a plot
+        profile=profile,
+    )
+
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    # df index is timestamps, columns are IA/IB/IC (for 3phase_I profile)
+    df = df.sort_index().copy()
+    df.index.name = "ts"
+    df = df.reset_index()
+
+    if profile == "3phase_I":
+        # Rename into the same convention as smartmeter parquet
+        df = df.rename(columns={
+            "IA": "I_a",
+            "IB": "I_b",
+            "IC": "I_c",
+        })
+        df["I_total"] = df[["I_a", "I_b", "I_c"]].sum(axis=1, skipna=True)
+
+    elif profile == "3phase_I_all":
+        # In this mode your code already collapses to a single 'I_total' col
+        if "I_total" not in df.columns:
+            # If columns are something else, just sum all numeric cols as a fallback
+            numeric_cols = df.select_dtypes("number").columns
+            df["I_total"] = df[numeric_cols].sum(axis=1, skipna=True)
+
+    # Keep only the columns we care about for comparison
+    cols = [c for c in ["ts", "I_a", "I_b", "I_c", "I_total"] if c in df.columns]
+    return df[cols]
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Plot Janitza measurements for an entire substation.")
     parser.add_argument("--dnr_str",default="D0579", help="Substation identifier (dnr_str) as listed in devices.csv")
@@ -483,20 +573,77 @@ if __name__ == "__main__":
     parser.add_argument("--combine", default="sum", choices=["sum", "mean"], help="How to combine multiple devices per phase")
     parser.add_argument("--auth-token", default=None, help="API auth token (overrides environment)")
     parser.add_argument("--no-show", action="store_true", help="Fetch data without displaying the plot")
+    parser.add_argument("--batch-all",action="store_true",help="Instead of plotting a single substation, export a parquet file for ALL substations (unique dnr_str from devices.csv).",)
+    parser.add_argument("--out-parquet",default=None,help="Output parquet path for batch mode. If not set, a name is built from the time range.",)
 
     args = parser.parse_args()
 
-    plot_substation_measurement(
-        dnr_str=args.dnr_str,
-        value_backend=args.value_backend,
-        devices_csv=Path(args.devices_csv),
-        capabilities_csv=Path(args.capabilities_csv) if args.capabilities_csv else None,
-        timebase=args.timebase,
-        start=args.start,
-        end=args.end,
-        which=args.which,
-        auth_token=args.auth_token,
-        combine=args.combine,
-        show=not args.no_show,
-        profile=args.profile, 
-    )
+    if args.batch_all:
+        # --- BATCH MODE: all substations from devices.csv ---
+        devices_path = Path(args.devices_csv)
+        caps_path = Path(args.capabilities_csv) if args.capabilities_csv else None
+
+        dnr_list = load_unique_dnr_str(devices_path)
+        print(f"Batch mode: found {len(dnr_list)} unique dnr_str in {devices_path}")
+        print("First few:", dnr_list[:10])
+
+        frames = []
+        for dnr in dnr_list:
+            print(f"\n=== Substation {dnr} ===")
+            df_sub = fetch_substation_timeseries(
+                dnr_str=dnr,
+                value_backend=args.value_backend,
+                devices_csv=devices_path,
+                capabilities_csv=caps_path,
+                timebase=args.timebase,
+                start=args.start,
+                end=args.end,
+                which=args.which,
+                auth_token=args.auth_token,
+                combine=args.combine,
+                profile=args.profile,
+            )
+            if df_sub.empty:
+                print("  -> no data, skipping")
+                continue
+
+            df_sub["dnr_str"] = dnr
+            frames.append(df_sub)
+
+        if not frames:
+            print("No Janitza data found for any substation - nothing to save.")
+        else:
+            all_df = pd.concat(frames, ignore_index=True)
+            all_df = all_df.sort_values(["dnr_str", "ts"])
+
+            # Build default output path if not provided
+            if args.out_parquet is not None:
+                out_path = Path(args.out_parquet)
+            else:
+                fmt_in = "%Y-%m-%d %H:%M"
+                start_dt = datetime.strptime(args.start, fmt_in)
+                end_dt   = datetime.strptime(args.end,   fmt_in)
+                start_tag = start_dt.strftime("%Y%m%d_%H%M")
+                end_tag   = end_dt.strftime("%Y%m%d_%H%M")
+                out_path = Path("data") / f"janitza_15min_all_{start_tag}_{end_tag}.parquet"
+
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            all_df.to_parquet(out_path, index=False)
+            print(f"\nSaved Janitza time series for {all_df['dnr_str'].nunique()} substations")
+            print("Output:", out_path)
+
+    else:
+        plot_substation_measurement(
+            dnr_str=args.dnr_str,
+            value_backend=args.value_backend,
+            devices_csv=Path(args.devices_csv),
+            capabilities_csv=Path(args.capabilities_csv) if args.capabilities_csv else None,
+            timebase=args.timebase,
+            start=args.start,
+            end=args.end,
+            which=args.which,
+            auth_token=args.auth_token,
+            combine=args.combine,
+            show=not args.no_show,
+            profile=args.profile,
+        )
