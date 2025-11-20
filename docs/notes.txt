@@ -11,3 +11,5 @@ I should sprint and chose metrics then scrap and make some kinda of dashboard ma
 
 
 96 og 512 sations mælieftir spennir en hinar mæla 801 stations mæla strengir úr stöð
+
+I removed Device_id 344 / substation 1046 since it only sampled at a 10min sample rate and during prelimary research seems uninteresting.
