@@ -1,7 +1,8 @@
 # src/phasebalance/smartmeter_fetch.py
 
 from __future__ import annotations
-
+from typing import Iterable, List  # if you want type hints
+from datetime import datetime
 from databricks.connect import DatabricksSession
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
@@ -18,6 +19,62 @@ PHASES = [
 
 TIME_RES = "15 minutes"  # aggregation resolution
 
+def _parse_substation_name(dnr_str: str) -> int | None:
+    """
+    Convert strings like 'D1070', 'D0411' to integer substation IDs 1070, 411.
+
+    Rules:
+      - must start with 'D'
+      - strip 'D' and leading zeros
+      - return None if it can't be parsed cleanly
+    """
+    if not isinstance(dnr_str, str):
+        return None
+
+    dnr_str = dnr_str.strip()
+    if not dnr_str or not dnr_str.startswith("D"):
+        return None
+
+    # Take everything after the 'D'
+    digits = dnr_str[1:]
+
+    # Strip leading zeros: '0411' -> '411', '0000' -> ''
+    digits = digits.lstrip("0")
+    if digits == "":
+        return None
+
+    try:
+        return int(digits)
+    except ValueError:
+        return None
+
+def load_substations_from_devices(devices_csv_path: str | Path) -> list[int]:
+    """
+    Read devices.csv and return a sorted list of distinct substation ids
+    inferred from the 'name' column (e.g. 'D0411' -> 411).
+    """
+    devices_csv_path = Path(devices_csv_path)
+    df = pd.read_csv(devices_csv_path)
+
+    if "dnr_str" not in df.columns:
+        raise ValueError(
+            f"'dnr_str' column not found in {devices_csv_path}. "
+            f"Available columns: {list(df.columns)}"
+        )
+
+    df["substation_id"] = df["dnr_str"].map(_parse_substation_name)
+
+    # Drop rows that couldn't be parsed to a valid int
+    subs = (
+        df["substation_id"]
+        .dropna()
+        .astype(int)
+        .drop_duplicates()
+        .sort_values()
+        .tolist()
+    )
+
+    return subs
 
 def get_spark():
     """
@@ -218,14 +275,36 @@ def fetch_and_save_smartmeter(
 
 
 if __name__ == "__main__":
-    # 🔧 Example usage: tweak these when you test
-    example_substations = [579]  # or [1, 2, 3, ...]
+    # Path to devices.csv – adjust to wherever it lives in your repo
+    devices_csv_path = Path("metadata/devices.csv")  # or Path("data/devices.csv")
+
+    # 1) Build list of distinct substation IDs from devices.csv
+    substation_ids = load_substations_from_devices(devices_csv_path)
+
+    #substation_ids = substation_ids[:2]  # TEMP: only first 5 for testing
+
+    print(f"Found {len(substation_ids)} substations from devices.csv")
+    print("First few:", substation_ids[:10])
+
+
+    # 2) Define time window
     start = "2025-11-01 12:00:00"
-    end = "2025-11-02 12:00:00"
+    end   = "2025-11-03 12:00:00"
+
+    #Turn start/end into compact tags for the filename
+    fmt_in = "%Y-%m-%d %H:%M:%S"
+    start_dt = datetime.strptime(start, fmt_in)
+    end_dt   = datetime.strptime(end,   fmt_in)
+    start_tag = start_dt.strftime("%Y%m%d")
+    end_tag   = end_dt.strftime("%Y%m%d")
+
+
+    # 3) Build output path dynamically
+    out_path = Path("data") / f"smartmeter_15min_all_from_devices_{start_tag}_{end_tag}.parquet"
 
     fetch_and_save_smartmeter(
-        substation_ids=example_substations,
+        substation_ids=substation_ids,
         start_date=start,
         end_date=end,
-        output_path="data/smartmeter_15min_579_20251101_20251107.parquet",
+        output_path=str(out_path),
     )
