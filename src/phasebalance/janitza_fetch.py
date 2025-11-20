@@ -15,7 +15,7 @@ Must be connected to Or.is VPN or run on-site to access GridVis server.
 from __future__ import annotations
 import json
 import re
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional, Union, List
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import requests
@@ -136,12 +136,13 @@ def build_hist_url(
 
 def _expand_timebases(tb: Union[int, str, list, tuple]) -> list[str]:
     """
-    Normalize the 'timebase' arg to a prioritized list of strings to try.
-    Accepts:
-      - single int seconds (e.g., 900)
-      - single label/short (e.g., "15m", "10 minutes")
-      - iterable of any mix above (e.g., ["15m","10m","1m"])
-    Returns list of canonical short labels like ["15m","10m","1m"] in priority order.
+    Normalize the 'timebase' arg to a prioritized list of short labels to try.
+
+    - If a single cadence is given, that cadence is tried first.
+    - If a list is given, its order is respected.
+    - '1m' is always appended as a final fallback (unless already present).
+
+    Returns list of canonical short labels like ["15m", "1m"] in priority order.
     """
     def _to_short_label(x) -> str:
         sec = _parse_timebase(x)                 # uses your existing helper
@@ -157,26 +158,108 @@ def _expand_timebases(tb: Union[int, str, list, tuple]) -> list[str]:
 
     labels = [_to_short_label(x) for x in tbs]
 
-    # If only one was provided, append sensible fallbacks
-    if len(labels) == 1:
-        first = labels[0]
-        if first == "15m":
-            labels += ["10m", "1m"]
-        elif first == "10m":
-            labels += ["15m", "1m"]
-        elif first == "1m":
-            labels += ["15m", "10m"]
-        else:
-            # Unknown cadence: still add common fallbacks
-            labels += ["15m", "10m", "1m"]
+    # Always ensure 1m is a final fallback, unless the caller already included it
+    if "1m" not in labels:
+        labels.append("1m")
 
     # Deduplicate but keep order
-    seen, out = set(), []
+    seen = set()
+    out: list[str] = []
     for x in labels:
         if x not in seen:
-            seen.add(x); out.append(x)
+            seen.add(x)
+            out.append(x)
     return out
 
+def _aggregate_from_1min(data: Dict[str, Any], target_tb_sec: int) -> Dict[str, Any]:
+    """
+    Aggregate 1-minute series up to a coarser fixed timebase (e.g. 15 min).
+
+    Assumes:
+      - input JSON has the same structure as GridVis hist values:
+          {
+            "timebase": 60,
+            "values": [
+              {
+                "max": ...,
+                "min": ...,
+                "avg": ...,
+                "startTime": ...,
+                "endTime": ...
+              }, ...
+            ]
+          }
+      - 'avg' is an average-like quantity over each interval (e.g. A, V, kW),
+        so the coarser 'avg' is the simple mean of the per-minute 'avg' values.
+    """
+    base_tb_sec = int(data.get("timebase", 60))
+    if base_tb_sec != 60:
+        raise GridVisClientError(
+            f"_aggregate_from_1min expected 60 s base timebase, got {base_tb_sec}"
+        )
+
+    if target_tb_sec == base_tb_sec:
+        return data
+
+    if target_tb_sec < base_tb_sec or target_tb_sec % base_tb_sec != 0:
+        raise GridVisClientError(
+            f"Cannot aggregate from 1m to {target_tb_sec} s timebase"
+        )
+
+    step = target_tb_sec // base_tb_sec
+    values = list(data.get("values") or [])
+
+    if not values:
+        # Nothing to aggregate; just adjust the reported timebase
+        new_data = dict(data)
+        new_data["timebase"] = target_tb_sec
+        new_data["values"] = []
+        return new_data
+
+    # Ensure values are in chronological order
+    values.sort(key=lambda v: v.get("startTime", 0))
+
+    aggregated: list[Dict[str, Any]] = []
+
+    for i in range(0, len(values), step):
+        chunk = values[i:i + step]
+        if len(chunk) < step:
+            # Drop incomplete trailing window
+            break
+
+        first = chunk[0]
+        last = chunk[-1]
+
+        agg_entry: Dict[str, Any] = {}
+
+        # Preserve time bounds
+        if "startTime" in first:
+            agg_entry["startTime"] = first["startTime"]
+        if "endTime" in last:
+            agg_entry["endTime"] = last["endTime"]
+
+        # Aggregate max / min / avg if present
+        max_vals = [v["max"] for v in chunk if "max" in v and v["max"] is not None]
+        if max_vals:
+            agg_entry["max"] = max(max_vals)
+
+        min_vals = [v["min"] for v in chunk if "min" in v and v["min"] is not None]
+        if min_vals:
+            agg_entry["min"] = min(min_vals)
+
+        avg_vals = [v["avg"] for v in chunk if "avg" in v and v["avg"] is not None]
+        if avg_vals:
+            agg_entry["avg"] = sum(avg_vals) / len(avg_vals)
+
+        # If you later need other fields (e.g. "sum"), add similar logic here.
+
+        aggregated.append(agg_entry)
+
+    new_data = dict(data)
+    new_data["timebase"] = target_tb_sec
+    new_data["values"] = aggregated
+    new_data["__resampled__"] = True
+    return new_data
 
 def fetch_hist_json(
     *,
@@ -192,24 +275,43 @@ def fetch_hist_json(
     timeout_s: int = HTTP_TIMEOUT_S,
 ) -> Optional[Dict[str, Any]]:
     """
-    Build the URL and GET the JSON. Supports **fallback timebases**:
-      - Pass a single preferred cadence (e.g., "15m"), and it will auto-try "10m", then "1m".
-      - Or pass an explicit priority list, e.g., ["15m","10m","1m"].
+    Build the URL and GET the JSON. Supports **fallback timebases** with automatic
+    1-minute resampling:
 
-    Returns parsed JSON dict. If dry_run=True, returns {"__urls__": [...]} with the tried URLs.
-    Raises GridVisClientError if all attempts fail or return non-JSON.
+      - Pass a single preferred cadence (e.g., "15m").
+        The client will first try native "15m" data.
+        If unavailable, it will try "1m" and, if found, aggregate 1m → 15m.
+      - Or pass an explicit priority list, e.g., ["15m","10m"] — "1m" will
+        still be added as a final fallback and, if used, will be aggregated
+        up to the first requested cadence.
+
+    Returns parsed JSON dict. If dry_run=True, returns {"__urls__": [...]} with
+    the tried URLs.
+
+    Guarantees:
+      - If it returns non-None and you requested a single cadence, the returned
+        JSON's "timebase" will match what you asked for (e.g., 900 s for "15m"),
+        even if the underlying server data came from 1-minute samples.
     """
+    # Determine the *primary* requested timebase for resampling decisions
+    if isinstance(timebase, (list, tuple)) and timebase:
+        primary_tb = timebase[0]
+    else:
+        primary_tb = timebase
+
+    target_tb_sec = _parse_timebase(primary_tb)
+
     cadences = _expand_timebases(timebase)
-    tried_urls = []
-    last_error = None
-    saw_nonjson = False  # <── new flag
+    tried_urls: list[str] = []
+    last_error: Optional[GridVisClientError] = None
+    saw_nonjson = False
 
     for tb in cadences:
         url = build_hist_url(
             device_id=device_id,
             variable_backend=variable_backend,
             phase_backend=phase_backend,
-            timebase=tb,              # <- minutes/labels are converted to seconds inside build_hist_url
+            timebase=tb,  # labels ("15m","1m") are parsed inside build_hist_url
             start=start,
             end=end,
             tz_name=tz_name,
@@ -225,13 +327,33 @@ def fetch_hist_json(
             resp = _SESSION.get(url, headers=headers, timeout=timeout_s)
             resp.raise_for_status()
             try:
-                return resp.json()  # ✅ success
+                data = resp.json()
             except ValueError:
                 # Not JSON, probably means "no data"
                 saw_nonjson = True
                 continue
+
+            attempt_tb_sec = _parse_timebase(tb)
+
+            # 1) Exact match to the primary requested cadence → return as-is
+            if attempt_tb_sec == target_tb_sec:
+                data["__resampled__"] = False
+                return data
+
+            # 2) Fallback from 1-minute to a coarser cadence (e.g., 1m → 15m)
+            if attempt_tb_sec == 60 and target_tb_sec >= 60 and target_tb_sec % 60 == 0:
+                return _aggregate_from_1min(data, target_tb_sec)
+
+            # 3) Any other successful cadence is returned as-is.
+            #    This only happens if the caller explicitly asked for that cadence
+            #    in the 'timebase' list.
+            data["__resampled__"] = False
+            return data
+
         except requests.exceptions.RequestException as e:
-            last_error = GridVisClientError(f"HTTP error for timebase '{tb}': {e}\nURL: {url}")
+            last_error = GridVisClientError(
+                f"HTTP error for timebase '{tb}': {e}\nURL: {url}"
+            )
             continue
 
     # ─────────── post-loop logic ───────────
@@ -253,16 +375,15 @@ def fetch_hist_json(
 
 
 
-
 # Optional: quick smoke test when running this file directly
 if __name__ == "__main__":
     # Edit these lines to test quickly inside VS Code.
-    DEVICE_ID        = 301
+    DEVICE_ID        = 324 
     VARIABLE_BACKEND = "I_Effective"
-    PHASE_BACKEND    = "Input01"
-    TIMEBASE         = "15m"
+    PHASE_BACKEND    = "L1"
+    TIMEBASE         = "1m"
     START            = "2025-10-01 12:00"
-    END              = "2025-10-02 12:00"
+    END              = "2025-10-01 12:30"
     AUTH_TOKEN       = None
 
     try:
