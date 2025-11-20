@@ -251,7 +251,6 @@ device_id,name,description,serialNr,type,typeDisplayName,dnr_str,feeder,phase
 341,D1030 SP1 L1 / Mod. 1,Mod. 1,48014023,Janitza800-CT8-A,800-CT8-A,D1030,SP1,L1
 342,D1030 SP1 L1 / Mod. 1 / Measurement Group 1,Mod. 1,48014023,JanitzaUMG801MeasurementGroup,UMG 801 Measurement Group,D1030,SP1,L1
 343,D1030 SP1 L1 / Mod. 1 / Measurement Group 2,Mod. 1,48014023,JanitzaUMG801MeasurementGroup,UMG 801 Measurement Group,D1030,SP1,L1
-344,D1046 SP2 L1,D1046 Dalbraut1 SP2 L1,7200-0335,JanitzaUMG605,UMG 605,D1046,SP2,L1
 346,D0662 SP2 L1,D0662 Skútuvogur 14 SP2 L1,47007805,JanitzaUMG801,UMG 801,D0662,SP2,L1
 347,D0662 SP2 L1 / UMG801-4700-7805,Basic Device of UMG801,47007805,JanitzaUMG801BaseModule,UMG801BaseModule,D0662,SP2,L1
 348,D0662 SP2 L1 / UMG801-4700-7805 / Measurement Group 1,Basic Device of UMG801,47007805,JanitzaUMG801MeasurementGroup,UMG 801 Measurement Group,D0662,SP2,L1
