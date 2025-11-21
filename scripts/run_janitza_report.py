@@ -25,9 +25,9 @@ from src.phasebalance.janitza_report_device import main as _report_main
 _DEF_CFG = "config/example_report.yaml"
 
 _DEF_CONTENT = {
-    "device_id": 301,
-    "start": "2025-09-01 00:00",
-    "end": "2025-10-01 00:00",
+    "device_id": 265,
+    "start": "2025-11-01 00:00",
+    "end": "2025-11-03 00:00",
     "timebase": "15m",
     "caps_csv": "data/capabilities.csv",
     "outdir": "results",

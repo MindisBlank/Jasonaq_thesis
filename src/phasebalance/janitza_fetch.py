@@ -378,12 +378,12 @@ def fetch_hist_json(
 # Optional: quick smoke test when running this file directly
 if __name__ == "__main__":
     # Edit these lines to test quickly inside VS Code.
-    DEVICE_ID        = 324 
+    DEVICE_ID        = 269 #262 , 263,
     VARIABLE_BACKEND = "I_Effective"
-    PHASE_BACKEND    = "L1"
-    TIMEBASE         = "1m"
-    START            = "2025-10-01 12:00"
-    END              = "2025-10-01 12:30"
+    PHASE_BACKEND    = "Input01"
+    TIMEBASE         = "15m"
+    START            = "2025-11-01 12:00"
+    END              = "2025-11-03 12:30"
     AUTH_TOKEN       = None
 
     try:
