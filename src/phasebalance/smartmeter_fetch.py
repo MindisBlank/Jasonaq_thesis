@@ -17,6 +17,7 @@ PHASES = [
     "LPQ_Current_L3_AVG",
 ]
 
+POWER_PHASES = ["AMP_Power_L1_AVG_T0","AMP_Power_L2_AVG_T0","AMP_Power_L3_AVG_T0",] # time resolution is 10 min here
 TIME_RES = "15 minutes"  # aggregation resolution
 
 def _parse_substation_name(dnr_str: str) -> int | None:
@@ -127,7 +128,7 @@ def _build_meteringpoint_frames(spark, substation_ids):
 
     # Only metering points with uppsetningar_stada == 'Completed'
     mp_completed = (
-        mp_base.filter(F.col("uppsetningar_stada") == "Completed")
+        mp_base.filter(F.col("uppsetningar_stada") != F.lit("planned"))
         .select(
             F.col("husveita_fastanumer").cast("string").alias("mp_id"),
             F.col("dreifistodvanumer").alias("substation_id"),
@@ -300,11 +301,13 @@ if __name__ == "__main__":
 
 
     # 3) Build output path dynamically
-    out_path = Path("data") / f"smartmeter_15min_all_from_devices_{start_tag}_{end_tag}.parquet"
+    out_path = Path("data") / f"smartmeter_15min_all_from_devices_{start_tag}_{end_tag}_power.parquet"
 
     fetch_and_save_smartmeter(
         substation_ids=substation_ids,
         start_date=start,
         end_date=end,
         output_path=str(out_path),
+        time_res="10 minutes",
+        phases=POWER_PHASES
     )

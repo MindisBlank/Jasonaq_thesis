@@ -17,6 +17,11 @@ except ImportError:  # pragma: no cover - for running as a script
 
 
 
+CHANNEL_SPEC_P = {
+    "PA": {"value_backend": "PowerActive", "type_candidates": ["Input01","Input05", "L1","L5"]},
+    "PB": {"value_backend": "PowerActive", "type_candidates": ["Input02","Input06", "L2","L6"]},
+    "PC": {"value_backend": "PowerActive", "type_candidates": ["Input03","Input07", "L3","L7"]},
+}
 
 
 CHANNEL_SPEC_I = {
@@ -398,6 +403,8 @@ def plot_substation_measurement(
         channel_spec = CHANNEL_SPEC_I
     elif profile == "neutral_I":
         channel_spec = CHANNEL_SPEC_I4
+    elif profile == "3phase_P":
+        channel_spec = CHANNEL_SPEC_P
     elif profile == "sum13_Iseq":
         channel_spec = CHANNEL_SPEC_SEQ_I
     else:
@@ -508,13 +515,20 @@ def fetch_substation_timeseries(
     profile: str = "3phase_I",
 ) -> pd.DataFrame:
     """
-    Fetch combined Janitza currents for one substation as a tidy DataFrame.
+    Fetch combined Janitza measurement for one substation as a tidy DataFrame.
 
-    Returns a DataFrame with:
-      ts, I_a, I_b, I_c, I_total
+    For profile="3phase_I":
+        ts, I_a, I_b, I_c, I_total
 
-    (If no data, returns an empty DataFrame.)
+    For profile="3phase_P":
+        ts, P_a, P_b, P_c, P_total
+
+    For profile="3phase_I_all":
+        ts, I_total
+
+    Other profiles return ts + whatever numeric columns are present.
     """
+
     _, _, df = plot_substation_measurement(
         dnr_str=dnr_str,
         value_backend=value_backend,
@@ -538,6 +552,7 @@ def fetch_substation_timeseries(
     df.index.name = "ts"
     df = df.reset_index()
 
+    
     if profile == "3phase_I":
         # Rename into the same convention as smartmeter parquet
         df = df.rename(columns={
@@ -547,6 +562,15 @@ def fetch_substation_timeseries(
         })
         df["I_total"] = df[["I_a", "I_b", "I_c"]].sum(axis=1, skipna=True)
 
+    elif profile == "3phase_P":
+        # Rename into the same convention as smartmeter parquet
+        df = df.rename(columns={
+            "PA": "P_a",
+            "PB": "P_b",
+            "PC": "P_c",
+        })
+        df["P_total"] = df[["P_a", "P_b", "P_c"]].sum(axis=1, skipna=True)
+
     elif profile == "3phase_I_all":
         # In this mode your code already collapses to a single 'I_total' col
         if "I_total" not in df.columns:
@@ -554,16 +578,25 @@ def fetch_substation_timeseries(
             numeric_cols = df.select_dtypes("number").columns
             df["I_total"] = df[numeric_cols].sum(axis=1, skipna=True)
 
-    # Keep only the columns we care about for comparison
-    cols = [c for c in ["ts", "I_a", "I_b", "I_c", "I_total"] if c in df.columns]
+    if profile == "3phase_I":
+        cols = ["ts", "I_a", "I_b", "I_c", "I_total"]
+    elif profile == "3phase_P":
+        cols = ["ts", "P_a", "P_b", "P_c", "P_total"]
+    elif profile == "3phase_I_all":
+        cols = ["ts", "I_total"]
+    else:
+        cols = ["ts"] + [c for c in df.columns if c != "ts"]
+
+    cols = [c for c in cols if c in df.columns]
     return df[cols]
+
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Plot Janitza measurements for an entire substation.")
     parser.add_argument("--dnr_str",default="D0579", help="Substation identifier (dnr_str) as listed in devices.csv")
     parser.add_argument("--value_backend",default="I_Effective", help="Measurement backend variable, e.g. I_Effective")
-    parser.add_argument("--profile",default="3phase_I",choices=["3phase_I", "3phase_I_all", "neutral_I", "sum13_Iseq"],help="Which channel profile to plot: " "3phase_I = IA/IB/IC total, 3phase_I_all = total current, neutral_I = neutral current, " "sum13_Iseq = sequence currents (I0/I1/I2 from SUM13/Overall)",)
+    parser.add_argument("--profile",default="3phase_I",choices=["3phase_I", "3phase_I_all", "neutral_I", "sum13_Iseq","3phase_P"],help="Which channel profile to plot: " "3phase_I = IA/IB/IC total, 3phase_I_all = total current, neutral_I = neutral current, " "sum13_Iseq = sequence currents (I0/I1/I2 from SUM13/Overall)""3phase_P = three-phase active power (PA/PB/PC)",)
     parser.add_argument("--devices-csv", default="metadata/devices.csv", help="Path to devices metadata CSV")
     parser.add_argument("--capabilities-csv",default="metadata/capabilities.csv",help="Path to capabilities metadata CSV (optional)",)
     parser.add_argument("--timebase", default="15m", help="Time bucket size for the fetch requests")
@@ -625,7 +658,7 @@ if __name__ == "__main__":
                 end_dt   = datetime.strptime(args.end,   fmt_in)
                 start_tag = start_dt.strftime("%Y%m%d_%H%M")
                 end_tag   = end_dt.strftime("%Y%m%d_%H%M")
-                out_path = Path("data") / f"janitza_15min_all_{start_tag}_{end_tag}.parquet"
+                out_path = Path("data") / f"janitza_{args.profile}_all_{start_tag}_{end_tag}.parquet"
 
             out_path.parent.mkdir(parents=True, exist_ok=True)
             all_df.to_parquet(out_path, index=False)
