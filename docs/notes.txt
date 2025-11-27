@@ -13,3 +13,25 @@ I should sprint and chose metrics then scrap and make some kinda of dashboard ma
 96 og 512 sations mælieftir spennir en hinar mæla 801 stations mæla strengir úr stöð
 
 I removed Device_id 344 / substation 1046 since it only sampled at a 10min sample rate and during prelimary research seems uninteresting.
+
+
+i need to get this data here to match LV_topogy and meter_cabinet_connections : 
+secondary_substation,zip_code_secondary_substation,transformer,transformer_capacity,lv_feeder,lv_feeder_fuse_size,node1,node2,cable_id,cable_type,cable_length,phase_size,phase_material,cable_capacity,resistance,reactance
+SecondarySubstation.208816,3200,Transformer.809395,200,LvFeeder.192811,125,Cabinet.300708,Cabinet.703112,LvCable.688064,MAL,42.6047220203054,95,AL,201,0.32000,0.07000
+SecondarySubstation.989773,3210,Transformer.160714,200,LvFeeder.717982,225,Cabinet.77318,Cabinet.45807,LvCable.158253,PEXMAL,34.9718537209962,150,AL,258,0.20700,0.07800
+
+meter_number,delivery_point_id,cabinet,lv_feeder,has_heat_pump,has_solar_panel,capacity_solar_panel,service_fuse_size
+795001,497495,Cabinet.860540,,false,false,,25
+680196,524547,Cabinet.228973,,false,false,,63
+31038,524547,Cabinet.228973,,false,false,,63
+690395,524547,Cabinet.228973,,false,false,,63
+495190,524547,Cabinet.228973,,false,false,,63
+
+This is what the feeder parquet look like :
+	voltage_l1_650861	voltage_l2_650861	voltage_l3_650861	active_power_p14_l1_650861	active_power_p14_l2_650861	active_power_p14_l3_650861	active_power_p23_l1_650861	active_power_p23_l2_650861	active_power_p23_l3_650861	reactive_power_q12_l1_650861	...	reactive_power_q12_l3_297442	reactive_power_q34_l1_297442	reactive_power_q34_l2_297442	reactive_power_q34_l3_297442	thdu_l1_297442	thdu_l2_297442	thdu_l3_297442	thdi_l1_297442	thdi_l2_297442	thdi_l3_297442
+timestamp_dst																					
+2023-09-04 08:45:00+00:00	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	...	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>
+2023-09-04 09:00:00+00:00	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	...	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>
+2023-09-04 09:15:00+00:00	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	...	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>
+2023-09-04 09:30:00+00:00	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	...	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>
+2023-09-04 09:45:00+00:00	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	...	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>
