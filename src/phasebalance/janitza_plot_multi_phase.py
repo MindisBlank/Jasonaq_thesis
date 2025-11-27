@@ -467,10 +467,19 @@ def plot_substation_measurement(
                     auth_token=auth_token,
                     which=which,
                 )
-                if not s.empty:
-                    phase_to_series_list[phase_key].append(s)
-                    if not unit_hint:
-                        unit_hint = (payload or {}).get("valueType", {}).get("unit", "")
+                if s.empty:
+                    continue
+                #detect "all zeros" time series
+                if s.fillna(0).eq(0).all():
+                    print(
+                        f"⚠️  Substation {dnr_str} | device {did} | phase {phase_key} "
+                        f"| channel {type_backend}: all values are zero in window."
+                    )
+
+
+                phase_to_series_list[phase_key].append(s)
+                if not unit_hint:
+                    unit_hint = (payload or {}).get("valueType", {}).get("unit", "")
 
     # --- Combine across devices (sum or mean per phase) ---
     df = _combine_phase_series(phase_to_series_list, how=combine)
@@ -478,7 +487,8 @@ def plot_substation_measurement(
         df = pd.DataFrame({
             "I_total": df.sum(axis=1, skipna=True)
         }).dropna(how="all")
-    if df.empty:
+    # If there is no data OR all numeric values are zero → treat as "no data"
+    if df.empty or df.select_dtypes(include="number").fillna(0).eq(0).all().all():
         print(f"❌ No data to plot for substation {dnr_str} (profile={profile}).")
         return None, None, pd.DataFrame()
 
