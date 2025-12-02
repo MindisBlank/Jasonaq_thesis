@@ -23,6 +23,11 @@ CHANNEL_SPEC_P = {
     "PC": {"value_backend": "PowerActive", "type_candidates": ["Input03","Input07", "L3","L7"]},
 }
 
+CHANNEL_SPEC_V = {
+        "VA": {"value_backend": "U_Effective", "type_candidates": ["Input01","Input05", "L1","L5"]},
+        "VB": {"value_backend": "U_Effective", "type_candidates": ["Input02","Input06", "L2","L6"]},
+        "VC": {"value_backend": "U_Effective", "type_candidates": ["Input03","Input07", "L3","L7"]},
+    }
 
 CHANNEL_SPEC_I = {
     "IA": {"value_backend": "I_Effective", "type_candidates": ["Input01","Input05", "L1","L5"]},
@@ -226,8 +231,17 @@ def plot_multi_phase_multi_device(
                 if not unit_hint:
                     unit_hint = (payload or {}).get("valueType", {}).get("unit", "")
 
+    # Decide how to combine across devices:
+    # - currents / power: usually sum
+    # - voltages (U_Effective etc.): mean
+    combine_mode = combine
+    if variable_backend.startswith("U_"):
+        if combine != "mean":
+            print(f"🔧 variable_backend={variable_backend}: overriding combine='{combine}' → 'mean' for voltages.")
+        combine_mode = "mean"
+
     # Build combined per-phase frame
-    df = _combine_phase_series(phase_to_series_list, how=combine)
+    df = _combine_phase_series(phase_to_series_list, how=combine_mode)
     if df.empty:
         print(f"❌ No data to plot for {list(device_ids)} phases {list(phases)} in window.")
         return None, None, pd.DataFrame()
@@ -364,6 +378,11 @@ def plot_substation_measurement(
         Uses CHANNEL_SPEC_SEQ_I and plots I0, I1, I2 (sequence currents)
         aggregated across devices.
 
+    profile = "3phase_V"
+        Uses CHANNEL_SPEC_V and plots three lines: VA, VB, VC.
+
+
+
     Any other profile (or if you later extend this) falls back to the old
     generic behaviour using _phases_for_measurement + plot_multi_phase_multi_device.
     """
@@ -407,6 +426,8 @@ def plot_substation_measurement(
         channel_spec = CHANNEL_SPEC_P
     elif profile == "sum13_Iseq":
         channel_spec = CHANNEL_SPEC_SEQ_I
+    elif profile == "3phase_V":            
+        channel_spec = CHANNEL_SPEC_V
     else:
         # Unknown profile → fall back to generic behaviour
         phases = _phases_for_measurement(caps, device_ids, value_backend)
@@ -482,7 +503,18 @@ def plot_substation_measurement(
                     unit_hint = (payload or {}).get("valueType", {}).get("unit", "")
 
     # --- Combine across devices (sum or mean per phase) ---
-    df = _combine_phase_series(phase_to_series_list, how=combine)
+    combine_mode = combine
+
+    # For voltages (profile 3phase_V or U_Effective), use mean across devices
+    if profile == "3phase_V" or value_backend.startswith("U_"):
+        if combine != "mean":
+            print(
+                f"🔧 profile={profile}, value_backend={value_backend}: "
+                f"overriding combine='{combine}' → 'mean' for voltages."
+            )
+        combine_mode = "mean"
+
+    df = _combine_phase_series(phase_to_series_list, how=combine_mode)
     if profile == "3phase_I_all" and not df.empty:
         df = pd.DataFrame({
             "I_total": df.sum(axis=1, skipna=True)
@@ -536,6 +568,9 @@ def fetch_substation_timeseries(
     For profile="3phase_I_all":
         ts, I_total
 
+    For profile="3phase_V":
+        ts, V_a, V_b, V_c, V_total
+
     Other profiles return ts + whatever numeric columns are present.
     """
 
@@ -581,6 +616,13 @@ def fetch_substation_timeseries(
         })
         df["P_total"] = df[["P_a", "P_b", "P_c"]].sum(axis=1, skipna=True)
 
+    elif profile == "3phase_V":          
+        df = df.rename(columns={
+            "VA": "V_a",
+            "VB": "V_b",
+            "VC": "V_c",
+        })
+
     elif profile == "3phase_I_all":
         # In this mode your code already collapses to a single 'I_total' col
         if "I_total" not in df.columns:
@@ -592,6 +634,8 @@ def fetch_substation_timeseries(
         cols = ["ts", "I_a", "I_b", "I_c", "I_total"]
     elif profile == "3phase_P":
         cols = ["ts", "P_a", "P_b", "P_c", "P_total"]
+    elif profile == "3phase_V":          
+        cols = ["ts", "V_a", "V_b", "V_c"]
     elif profile == "3phase_I_all":
         cols = ["ts", "I_total"]
     else:
@@ -606,7 +650,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Plot Janitza measurements for an entire substation.")
     parser.add_argument("--dnr_str",default="D0579", help="Substation identifier (dnr_str) as listed in devices.csv")
     parser.add_argument("--value_backend",default="I_Effective", help="Measurement backend variable, e.g. I_Effective")
-    parser.add_argument("--profile",default="3phase_I",choices=["3phase_I", "3phase_I_all", "neutral_I", "sum13_Iseq","3phase_P"],help="Which channel profile to plot: " "3phase_I = IA/IB/IC total, 3phase_I_all = total current, neutral_I = neutral current, " "sum13_Iseq = sequence currents (I0/I1/I2 from SUM13/Overall)""3phase_P = three-phase active power (PA/PB/PC)",)
+    parser.add_argument("--profile",default="3phase_I",choices=["3phase_I", "3phase_I_all", "neutral_I", "sum13_Iseq","3phase_P","3phase_V"],help="Which channel profile to plot: " "3phase_I = IA/IB/IC total, 3phase_I_all = total current, neutral_I = neutral current, " "sum13_Iseq = sequence currents (I0/I1/I2 from SUM13/Overall)""3phase_P = three-phase active power (PA/PB/PC)",)
     parser.add_argument("--devices-csv", default="metadata/devices.csv", help="Path to devices metadata CSV")
     parser.add_argument("--capabilities-csv",default="metadata/capabilities.csv",help="Path to capabilities metadata CSV (optional)",)
     parser.add_argument("--timebase", default="15m", help="Time bucket size for the fetch requests")
