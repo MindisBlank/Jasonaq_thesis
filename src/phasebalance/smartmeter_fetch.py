@@ -20,6 +20,111 @@ PHASES = [
 POWER_PHASES = ["AMP_Power_L1_AVG_T0","AMP_Power_L2_AVG_T0","AMP_Power_L3_AVG_T0",] # time resolution is 10 min here
 TIME_RES = "15 minutes"  # aggregation resolution
 
+
+Voltage_PHASES = [
+    "LPQ_Voltage_L1_AVG",
+    "LPQ_Voltage_L2_AVG",
+    "LPQ_Voltage_L3_AVG",
+]
+
+def fetch_and_save_smartmeter_voltage(
+    substation_ids,
+    start_date: str,
+    end_date: str,
+    output_path: str,
+    time_res: str = TIME_RES,  # e.g. "15 minutes"
+):
+    """
+    Fetch smartmeter voltages for given substations and time window, aggregate to
+    `time_res`, and save to a local file.
+
+    Output columns:
+      substation_id, ts, V_a, V_b, V_c, per_completed
+    """
+    spark = get_spark()
+
+    # Re-use mapping + per_completed from your existing helper
+    mp_completed, mp_status = _build_meteringpoint_frames(spark, substation_ids)
+
+    sm_ts = spark.read.table("veiturdata_base_prd.ami.smartmeter")
+
+    # 1) Join smartmeter with Completed metering points
+    joined = (
+        sm_ts.withColumn("meteringpointid", F.col("meteringpointid").cast("string"))
+        .join(mp_completed, F.col("meteringpointid") == F.col("mp_id"), "inner")
+        .filter(
+            (F.col("timestamp") >= F.lit(start_date))
+            & (F.col("timestamp") <= F.lit(end_date))
+            & (F.col("validity") == F.lit("Valid"))
+            & (F.col("resulttype").isin(*Voltage_PHASES))
+        )
+        .select(
+            F.to_timestamp("timestamp").alias("ts"),
+            "resulttype",
+            F.col("value").cast("double").alias("value_V"),
+            "meteringpointid",
+            "substation_id",
+        )
+    )
+
+    # 2) Deduplicate per (substation, meter, phase, ts)
+    w = Window.partitionBy(
+        "substation_id", "meteringpointid", "resulttype", "ts"
+    ).orderBy(F.col("ts"))
+
+    joined_dedup = (
+        joined.withColumn("rn", F.row_number().over(w))
+        .filter(F.col("rn") == 1)
+        .drop("rn")
+    )
+
+    # 3) Aggregate voltages to time_res using average per substation & phase
+    v_per_phase_res = (
+        joined_dedup
+        .withColumn("ts_res", F.window("ts", time_res).start)
+        .groupBy("substation_id", "ts_res", "resulttype")
+        .agg(F.avg("value_V").alias("V_res"))
+    )
+
+    # 4) Pivot phases → V_a / V_b / V_c
+    v_pivot = (
+        v_per_phase_res.groupBy("substation_id", "ts_res")
+        .pivot("resulttype", Voltage_PHASES)
+        .agg(F.first("V_res"))
+        .withColumnRenamed("ts_res", "ts")
+        .orderBy("substation_id", "ts")
+    )
+
+    result = (
+        v_pivot
+        .withColumnRenamed(Voltage_PHASES[0], "V_a")
+        .withColumnRenamed(Voltage_PHASES[1], "V_b")
+        .withColumnRenamed(Voltage_PHASES[2], "V_c")
+    )
+
+    # 5) Attach per_completed (same as current pipeline)
+    result = result.join(
+        mp_status.select("substation_id", "per_completed"),
+        on="substation_id",
+        how="left",
+    )
+
+    # 6) Save to disk
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    pdf = result.toPandas()
+    pdf.attrs.clear()
+
+    if output_path.suffix.lower() == ".parquet":
+        pdf.to_parquet(output_path, index=False)
+    else:
+        pdf.to_csv(output_path, index=False)
+
+    print(f"Saved {len(pdf)} rows to {output_path}")
+    return pdf
+
+
+
 def _parse_substation_name(dnr_str: str) -> int | None:
     """
     Convert strings like 'D1070', 'D0411' to integer substation IDs 1070, 411.
@@ -301,13 +406,21 @@ if __name__ == "__main__":
 
 
     # 3) Build output path dynamically
-    out_path = Path("data") / f"smartmeter_15min_all_from_devices_{start_tag}_{end_tag}_power.parquet"
+    out_path = Path("data") / f"smartmeter_15min_all_from_devices_{start_tag}_{end_tag}_voltage.parquet"
 
-    fetch_and_save_smartmeter(
+    # fetch_and_save_smartmeter(
+    #     substation_ids=substation_ids,
+    #     start_date=start,
+    #     end_date=end,
+    #     output_path=str(out_path),
+    #     time_res="10 minutes",
+    #     phases=POWER_PHASES
+    # )
+
+    fetch_and_save_smartmeter_voltage(
         substation_ids=substation_ids,
         start_date=start,
         end_date=end,
         output_path=str(out_path),
         time_res="10 minutes",
-        phases=POWER_PHASES
     )
