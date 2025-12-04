@@ -11,7 +11,9 @@ All functions rely on the static config below.
 
 Must be connected to Or.is VPN or run on-site to access GridVis server.
 """
-
+#!!!NOTICE : When pulling a device at sample rate of 60s the timestamp data does not align with the minute for example if you change
+#!!! the UTC ns time to datetime it would look like 11:59:00.00004 instead of 12:00:00.00000. 
+#!!! I am not sure how I will handle this sohuld I shift it here or later in the data processing pipeline..
 from __future__ import annotations
 import json
 import re
@@ -226,7 +228,7 @@ def _aggregate_from_1min(data: Dict[str, Any], target_tb_sec: int) -> Dict[str, 
         if len(chunk) < step:
             # Drop incomplete trailing window
             break
-
+        
         first = chunk[0]
         last = chunk[-1]
 
@@ -378,12 +380,12 @@ def fetch_hist_json(
 # Optional: quick smoke test when running this file directly
 if __name__ == "__main__":
     # Edit these lines to test quickly inside VS Code.
-    DEVICE_ID        = 269 #262 , 263,
+    DEVICE_ID        = 263 #262 , 263,
     VARIABLE_BACKEND = "I_Effective"
     PHASE_BACKEND    = "Input01"
     TIMEBASE         = "15m"
     START            = "2025-11-01 12:00"
-    END              = "2025-11-03 12:30"
+    END              = "2025-11-01 13:00"
     AUTH_TOKEN       = None
 
     try:
