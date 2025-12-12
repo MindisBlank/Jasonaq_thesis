@@ -17,8 +17,12 @@ from typing import Iterable, Optional
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from phasebalance.janitza_fetch import fetch_hist_json
-from phasebalance.phase_unbalance_utils import _series_from_values
+try:
+    from .janitza_fetch import fetch_hist_json
+    from .phase_unbalance_utils import _series_from_values
+except ImportError:
+    from janitza_fetch import fetch_hist_json
+    from phase_unbalance_utils import _series_from_values
 
 
 def _load_channels(
