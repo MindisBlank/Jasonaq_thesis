@@ -1,4 +1,4 @@
-dnr_str: D1534
+dnr_str: D1248
 value_backend: I_Effective
 profile: 3phase_I
 devices_csv: metadata/devices.csv
