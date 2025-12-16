@@ -123,8 +123,6 @@ def fetch_and_save_smartmeter_voltage(
     print(f"Saved {len(pdf)} rows to {output_path}")
     return pdf
 
-
-
 def _parse_substation_name(dnr_str: str) -> int | None:
     """
     Convert strings like 'D1070', 'D0411' to integer substation IDs 1070, 411.
@@ -189,6 +187,50 @@ def get_spark():
     """
     return DatabricksSession.builder.getOrCreate()
 
+def load_substations_from_parquet(parquet_path: str | Path) -> list[int]:
+    """
+    Read a parquet file and return a sorted list of distinct substation ids
+    inferred from the 'dnr_str' column (e.g. 'D0411' -> 411).
+
+    Also prints how many unique dnr_str are present (useful sanity check).
+    """
+    parquet_path = Path(parquet_path)
+
+    # Read only the dnr_str column if possible (faster on big files)
+    try:
+        df = pd.read_parquet(parquet_path, columns=["dnr_str"])
+    except Exception:
+        df = pd.read_parquet(parquet_path)
+
+    if "dnr_str" not in df.columns:
+        raise ValueError(
+            f"'dnr_str' column not found in {parquet_path}. "
+            f"Available columns: {list(df.columns)}"
+        )
+
+    dnr_clean = (
+        df["dnr_str"]
+        .dropna()
+        .astype(str)
+        .str.strip()
+    )
+
+    unique_dnr = sorted(dnr_clean.drop_duplicates().tolist())
+    print(f"Found {len(unique_dnr)} unique dnr_str in parquet: {parquet_path}")
+    print("First few dnr_str:", unique_dnr[:10])
+
+    # Convert Dxxxx -> int substation_id using your existing parser
+    substation_ids = (
+        pd.Series(unique_dnr)
+        .map(_parse_substation_name)
+        .dropna()
+        .astype(int)
+        .drop_duplicates()
+        .sort_values()
+        .tolist()
+    )
+
+    return substation_ids
 
 def _build_meteringpoint_frames(spark, substation_ids):
     """
@@ -241,7 +283,6 @@ def _build_meteringpoint_frames(spark, substation_ids):
     )
 
     return mp_completed, mp_status
-
 
 def fetch_and_save_smartmeter(
     substation_ids,
@@ -381,21 +422,24 @@ def fetch_and_save_smartmeter(
 
 
 if __name__ == "__main__":
-    # Path to devices.csv – adjust to wherever it lives in your repo
-    devices_csv_path = Path("metadata/devices.csv")  # or Path("data/devices.csv")
+
+    janitza_parquet_path = Path("data/janitza_3phase_I_all_20250801_0000_20251101_0000.parquet")
 
     # 1) Build list of distinct substation IDs from devices.csv
-    substation_ids = load_substations_from_devices(devices_csv_path)
+    substation_ids = load_substations_from_parquet(janitza_parquet_path)
 
     #substation_ids = substation_ids[:2]  # TEMP: only first 5 for testing
 
-    print(f"Found {len(substation_ids)} substations from devices.csv")
+    print(f"Found {len(substation_ids)} substations from parquet.")
     print("First few:", substation_ids[:10])
 
 
+    # define the profile
+    Profile = PHASES
+
     # 2) Define time window
-    start = "2025-11-01 12:00:00"
-    end   = "2025-11-03 12:00:00"
+    start = "2025-08-01 00:00:00"
+    end   = "2025-11-01 00:00:00"
 
     #Turn start/end into compact tags for the filename
     fmt_in = "%Y-%m-%d %H:%M:%S"
@@ -406,21 +450,21 @@ if __name__ == "__main__":
 
 
     # 3) Build output path dynamically
-    out_path = Path("data") / f"smartmeter_15min_all_from_devices_{start_tag}_{end_tag}_voltage.parquet"
+    out_path = Path("data") / f"smartmeter_15min_all_from_devices_{start_tag}_{end_tag}_{Profile}.parquet"
 
-    # fetch_and_save_smartmeter(
+    fetch_and_save_smartmeter(
+        substation_ids=substation_ids,
+        start_date=start,
+        end_date=end,
+        output_path=str(out_path),
+        time_res="15 minutes",
+        phases=Profile
+    )
+
+    # fetch_and_save_smartmeter_voltage(
     #     substation_ids=substation_ids,
     #     start_date=start,
     #     end_date=end,
     #     output_path=str(out_path),
     #     time_res="10 minutes",
-    #     phases=POWER_PHASES
     # )
-
-    fetch_and_save_smartmeter_voltage(
-        substation_ids=substation_ids,
-        start_date=start,
-        end_date=end,
-        output_path=str(out_path),
-        time_res="10 minutes",
-    )
