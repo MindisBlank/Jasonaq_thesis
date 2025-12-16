@@ -10,5 +10,8 @@
             "name": "JasonSQL",
             "path": "/sql/1.0/warehouses/8d91bdf17bf84bf8"
         }
-    ]
+    ],
+    "python-envs.defaultEnvManager": "ms-python.python:conda",
+    "python-envs.defaultPackageManager": "ms-python.python:conda",
+    "python-envs.pythonProjects": []
 }
