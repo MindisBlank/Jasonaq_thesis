@@ -35,3 +35,442 @@ timestamp_dst
 2023-09-04 09:15:00+00:00	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	...	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>
 2023-09-04 09:30:00+00:00	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	...	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>
 2023-09-04 09:45:00+00:00	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	...	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>	<NA>
+
+
+Old code that I might want to use again : 
+
+"""
+# --- 1) BEFORE: power diffs without CT correction ---
+
+df_power_before = df_merged_power.copy()
+
+# Total power diff and abs % diff (NaN if smartmeter P_total is 0)
+df_power_before["P_total_diff"] = (
+    df_power_before["P_total_sm"] - df_power_before["P_total_jn"]
+)
+df_power_before["P_total_abs_pct_diff"] = (
+    100 * df_power_before["P_total_diff"].abs()
+    / df_power_before["P_total_sm"].replace(0, np.nan)
+)
+
+sub_stats_power_before = (
+    df_power_before
+    .groupby("substation_id")
+    .agg(
+        mean_P_total_sm   = ("P_total_sm", "mean"),
+        mean_P_total_jn   = ("P_total_jn", "mean"),
+        mean_diff         = ("P_total_diff", "mean"),
+        mean_abs_diff     = ("P_total_diff", lambda s: s.abs().mean()),
+        mean_abs_pct_diff = ("P_total_abs_pct_diff", "mean"),
+        per_completed     = ("per_completed", "max"),
+        n_mps             = ("n_mps", "max"),
+    )
+)
+
+# --- 2) AFTER: apply CT scaling alpha_ct to Janitza power ---
+
+df_power_after = df_merged_power.copy()
+
+# bring alpha_ct per substation
+df_power_after = df_power_after.merge(
+    df_computed[["substation_id", "alpha_ct"]],
+    on="substation_id",
+    how="left",
+)
+
+# substations without alpha_ct → no correction
+df_power_after["alpha_ct"] = df_power_after["alpha_ct"].fillna(1.0)
+
+# ASSUMPTION: JD ≈ alpha_ct * SM  ⇒  correct JN by dividing by alpha_ct
+df_power_after["P_total_jn_corr"] = (
+    df_power_after["P_total_jn"] / df_power_after["alpha_ct"]
+)
+
+# corrected diff and abs % diff
+df_power_after["P_total_diff_corr"] = (
+    df_power_after["P_total_sm"] - df_power_after["P_total_jn_corr"]
+)
+df_power_after["P_total_abs_pct_diff_corr"] = (
+    100 * df_power_after["P_total_diff_corr"].abs()
+    / df_power_after["P_total_sm"].replace(0, np.nan)
+)
+
+sub_stats_power_after = (
+    df_power_after
+    .groupby("substation_id")
+    .agg(
+        mean_P_total_sm        = ("P_total_sm", "mean"),
+        mean_P_total_jn_corr   = ("P_total_jn_corr", "mean"),
+        mean_diff_corr         = ("P_total_diff_corr", "mean"),
+        mean_abs_diff_corr     = ("P_total_diff_corr", lambda s: s.abs().mean()),
+        mean_abs_pct_diff_corr = ("P_total_abs_pct_diff_corr", "mean"),
+        per_completed          = ("per_completed", "max"),
+        n_mps                  = ("n_mps", "max"),
+    )
+)
+
+# --- 3) Filter substations and align BEFORE/AFTER ---
+
+cutoff  = 0.9   # per_completed threshold
+min_num = 1     # minimum number of meters
+
+mask_before = (
+    (sub_stats_power_before["per_completed"] >= cutoff)
+    & (sub_stats_power_before["n_mps"] >= min_num)
+)
+mask_after = (
+    (sub_stats_power_after["per_completed"] >= cutoff)
+    & (sub_stats_power_after["n_mps"] >= min_num)
+)
+
+valid_ids = sub_stats_power_before.index[mask_before & mask_after]
+
+combined_p = pd.DataFrame(index=valid_ids)
+combined_p["mean_abs_pct_before"] = sub_stats_power_before.loc[valid_ids, "mean_abs_pct_diff"]
+combined_p["mean_abs_pct_after"]  = sub_stats_power_after.loc[valid_ids, "mean_abs_pct_diff_corr"]
+combined_p["n_mps"]               = sub_stats_power_after.loc[valid_ids, "n_mps"]
+
+# sort by corrected error
+combined_p = combined_p.sort_values("mean_abs_pct_after")
+
+print(f"Number of substations with n_mps >= {min_num}: {len(sub_stats_power_before.query('n_mps >= @min_num'))}")
+print(f"Number of substations with per_completed >= {cutoff}: {len(combined_p)}")
+
+# --- 4) Plot BEFORE vs AFTER (power) ---
+
+x      = np.arange(len(combined_p))
+width  = 0.4
+
+before = combined_p["mean_abs_pct_before"].to_numpy(float)
+after  = combined_p["mean_abs_pct_after"].to_numpy(float)
+n_mps_vals = combined_p["n_mps"].to_numpy(int)
+subs   = combined_p.index.astype(int)
+
+fig, ax = plt.subplots(figsize=(14, 5))
+
+ax.bar(x - width/2, before, width=width, label="Before CT correction")
+ax.bar(x + width/2, after,  width=width, label="After CT correction")
+
+ax.set_xticks(x)
+ax.set_xticklabels(subs, rotation=90)
+ax.set_xlabel("Substation ID")
+ax.set_ylabel("Mean |P_total_sm - P_total_jn| [% of smartmeter]")
+ax.set_title(
+    "Per-substation mean absolute *percentage* difference in TOTAL POWER\n"
+    f"(per_completed ≥ {cutoff}, n_mps ≥ {min_num}; using same α_CT as for currents)"
+)
+
+offset = 0.01 * (max(before.max(), after.max()) if len(before) else 1.0)
+for xi, hi, n in zip(x, after, n_mps_vals):
+    ax.text(
+        xi + width/2,
+        hi + offset,
+        str(n),
+        ha="center",
+        va="bottom",
+        fontsize=8,
+    )
+
+ax.legend()
+plt.tight_layout()
+plt.show()
+
+"""
+
+"""
+# --- 1) Apply CT correction to Janitza POWER in a copy of df_merged_power ---
+
+dfp = df_merged_power.copy()
+
+# Bring alpha_ct from df_computed – must have columns: substation_id, alpha_ct
+dfp = dfp.merge(
+    df_computed[["substation_id", "alpha_ct"]],
+    on="substation_id",
+    how="left",
+)
+
+# If some substations don't have alpha_ct, treat them as "no correction"
+dfp["alpha_ct"] = dfp["alpha_ct"].fillna(1.0)
+
+# ASSUMPTION: you fitted JD ≈ alpha_ct * SMD
+# → to correct Janitza to smartmeter scale, divide by alpha_ct:
+dfp["P_total_jn_corr"] = dfp["P_total_jn"] / dfp["alpha_ct"]
+
+# Diff and abs % diff AFTER correction
+dfp["P_total_diff_corr"] = dfp["P_total_sm"] - dfp["P_total_jn_corr"]
+dfp["P_total_abs_pct_diff_corr"] = (
+    100 * dfp["P_total_diff_corr"].abs() / dfp["P_total_sm"].replace(0, np.nan)
+)
+
+# --- 2) Per-substation stats (same structure as before, but for POWER) ---
+
+sub_stats_power_corr = (
+    dfp
+    .groupby("substation_id")
+    .agg(
+        mean_P_total_sm        = ("P_total_sm", "mean"),
+        mean_P_total_jn_corr   = ("P_total_jn_corr", "mean"),
+        mean_diff_corr         = ("P_total_diff_corr", "mean"),
+        mean_abs_diff_corr     = ("P_total_diff_corr", lambda s: s.abs().mean()),
+        mean_abs_pct_diff_corr = ("P_total_abs_pct_diff_corr", "mean"),
+        per_completed          = ("per_completed", "max"),
+        n_mps                  = ("n_mps", "max"),
+    )
+)
+
+# --- 3) Filter + sort like before, but using corrected POWER metric ---
+
+cutoff  = 0.9   # per_completed threshold
+min_num = 1     # minimum number of meters
+
+sub_stats_pct_power_corr = (
+    sub_stats_power_corr
+    .query("n_mps >= @min_num and per_completed >= @cutoff")
+    .sort_values("mean_abs_pct_diff_corr")
+)
+
+print("Number of substations with n_mps >= {min_num}:",
+      len(sub_stats_power_corr.query("n_mps >= @min_num")))
+print("Number of substations with per_completed >= {cutoff}:",
+      len(sub_stats_pct_power_corr))
+
+# --- 4) Plot corrected mean abs % diff per substation (POWER) ---
+
+x          = np.arange(len(sub_stats_pct_power_corr))
+height     = sub_stats_pct_power_corr["mean_abs_pct_diff_corr"].to_numpy(float)
+sign       = sub_stats_pct_power_corr["mean_diff_corr"].to_numpy(float)
+n_mps_vals = sub_stats_pct_power_corr["n_mps"].to_numpy(int)
+colors     = ["tab:blue" if val > 0 else "tab:orange" for val in sign]
+subs       = sub_stats_pct_power_corr.index.astype(int)
+
+fig, ax = plt.subplots(figsize=(14, 5))
+ax.bar(x, height, color=colors)
+
+ax.set_xticks(x)
+ax.set_xticklabels(subs, rotation=90)
+ax.set_xlabel("Substation ID")
+ax.set_ylabel("Mean |P_total_sm - P_total_jn_corr| [% of smartmeter]")
+ax.set_title(
+    "Per-substation mean absolute *percentage* difference in TOTAL POWER\n"
+    f"AFTER CT correction (per_completed ≥ {cutoff}, at least {min_num} meters; "
+    "blue: SM higher on avg, orange: JN higher)"
+)
+
+offset = 0.01 * (height.max() if len(height) else 1.0)
+for xi, hi, n in zip(x, height, n_mps_vals):
+    ax.text(xi, hi + offset, str(n), ha="center", va="bottom", fontsize=8)
+
+plt.tight_layout()
+plt.show()
+
+
+"""
+
+"""
+SM_voltage = "../data/smartmeter_15min_all_from_devices_20251101_20251103_voltage.parquet"  # smartmeter voltage
+df_sm_voltage = pd.read_parquet(SM_voltage)
+
+J_voltage = "../data/janitza_3phase_V_all_20251101_1200_20251103_1200.parquet"  # Janitza voltage
+df_J_voltage = pd.read_parquet(J_voltage)
+
+# Add substation_id column by parsing dnr_str
+df_J_voltage["substation_id"] = df_J_voltage["dnr_str"].map(parse_dnr)
+df_sm_voltage = df_sm_voltage.sort_values(["substation_id", "ts"])
+df_J_voltage = df_J_voltage.sort_values(["substation_id", "ts"])
+
+df_sm_voltage = df_sm_voltage.rename(columns={"I_a" : "P_a", "I_b": "P_b", "I_c": "P_c", "I_total": "P_total"})
+
+# Ensure timestamps are timezone-naive UTC
+df_J_voltage["ts"] = pd.to_datetime(df_J_voltage["ts"], utc=True).dt.tz_localize(None)
+
+
+# Get the substations that exist in JN
+jn_substations = df_J_voltage["substation_id"].unique()
+
+# Filter SM to only keep those substations
+df_sm_voltage = df_sm_voltage[df_sm_voltage["substation_id"].isin(jn_substations)].copy()
+
+
+# Make sure timestamps are the same dtype
+df_sm_voltage["ts"] = pd.to_datetime(df_sm_voltage["ts"])
+df_J_voltage["ts"] = pd.to_datetime(df_J_voltage["ts"])
+
+# Correct Janitza timestamps to match Smartmeter timestamps
+df_J_voltage["ts"]= df_J_voltage["ts"].dt.ceil("10min") 
+
+# Trim both datasets to the same time range
+max_ts_sm = df_sm_voltage["ts"].max()
+df_sm_voltage = df_sm_voltage[df_sm_voltage["ts"] < max_ts_sm].copy()
+df_J_voltage = df_J_voltage[df_J_voltage["ts"] < max_ts_sm].copy()
+
+# Remove weird substations from both datasets
+weird_ids = [1482, 1534, 1554,1049,710]
+df_sm_voltage = df_sm_voltage[~df_sm_voltage["substation_id"].isin(weird_ids)].copy()
+df_J_voltage = df_J_voltage[~df_J_voltage["substation_id"].isin(weird_ids)].copy()
+
+# drop duplicates in Janitza data
+df_J_voltage = df_J_voltage.drop_duplicates(subset=["substation_id", "ts"], keep="first").copy()
+
+
+df_merged_voltage = df_sm_voltage.merge(
+    df_J_voltage,
+    on=["substation_id", "ts"],
+    how="inner",             # intersection only
+    suffixes=("_sm", "_jn"),
+    validate="one_to_one"    # safety check: raises if keys aren't 1:1
+)
+
+print("SM shape:",df_sm_voltage.shape)
+print("JN shape:",df_J_voltage.shape)
+print("Merged shape:",df_merged_voltage.shape)
+
+def compute_voltage_corr(df_v, min_points: int = 20) -> pd.DataFrame:
+    rows = []
+    for sid, g in df_v.groupby("substation_id"):
+        g = g.dropna(subset=["V_mean_jn", "V_mean_sm"])
+        if len(g) < min_points:
+            continue
+        corr = g["V_mean_jn"].corr(g["V_mean_sm"])
+        rows.append({
+            "substation_id": sid,
+            "V_corr": corr,
+            "n_points": len(g),
+        })
+    return pd.DataFrame(rows)
+
+
+df_merged_voltage["V_mean_jn"] = df_merged_voltage[["V_a_jn", "V_b_jn", "V_c_jn"]].mean(axis=1)
+df_merged_voltage["V_mean_sm"] = df_merged_voltage[["V_a_sm", "V_b_sm", "V_c_sm"]].mean(axis=1)
+
+voltage_corr_summary = compute_voltage_corr(df_merged_voltage)
+voltage_corr_summary.sort_values("V_corr", ascending=False).head(30)
+
+"""
+mark down
+"""
+### CT diagnostics: meaning of the returned columns
+
+For each **substation**, `compute_ct_diagnostics` returns one row with the following
+diagnostics. The goal is to separate **CT scaling issues** from **missing meters /
+unmetered load / other weirdness**.
+
+---
+
+#### Basic regression between SMD and JD
+
+- **`alpha_ls`**  
+  Slope of the unconstrained linear regression  
+  $
+  I_\text{JD} \approx \alpha_\text{ls} \cdot I_\text{SM} + \beta
+  $  
+  If everything was perfect and fully metered, we’d expect `alpha_ls ≈ 1`.  
+  Values > 1 mean JD is typically larger than SMD; < 1 means the opposite.
+
+- **`beta`**  
+  Intercept of that regression. Roughly: JD current when SMD current is 0.  
+  In a pure scaling (CT) error scenario this should be close to 0.  
+  A big `beta` can suggest some “baseline” unmetered load or bias.
+
+- **`r2`**  
+  Coefficient of determination (R²) of the regression.  
+  Measures how well a *linear* model with slope and intercept explains JD from SMD.
+  Values close to 1 mean “JD is basically a straight-line function of SMD”.
+
+- **`corr`**  
+  Pearson correlation between `I_total_jn` and `I_total_sm`.  
+  This is a pure shape similarity measure (ignores absolute scale).  
+  Values close to 1 mean the time profiles look almost identical.
+
+---
+
+#### Ratio JD / SMD over time
+
+These are based on the pointwise ratio  
+$
+\text{ratio}_t = \frac{I_{\text{JD},t}}{I_{\text{SM},t}}
+$
+after filtering out very small currents.
+
+- **`ratio_median`**  
+  Typical JD/SMD scale factor. If JD is usually about 1.5× SMD,  
+  then `ratio_median ≈ 1.5`.
+
+- **`ratio_std`**  
+  Variability of the JD/SMD ratio.  
+  Small value → ratio is very stable → looks like a fixed scaling factor.  
+  Large value → ratio jumps around → likely more than just a CT scale issue.
+
+- **`ratio_min`**  
+  Minimum observed JD/SMD. Normally should be ≥ 1 if JD is an upper bound.
+  Very small values can indicate timestamps where SMD > JD or bad data.
+
+- **`ratio_p05`**  
+  5th percentile of the ratio distribution (a “robust minimum”).  
+  Used as a safer lower bound than `ratio_min` so one glitch doesn’t dominate.
+
+---
+
+#### CT scaling estimates
+
+- **`alpha0_through_origin`**  
+  Slope of the regression **forced through (0,0)**:  
+  $
+  \alpha_0 = \frac{\sum x y}{\sum x^2}
+  $  
+  This is the “best” pure multiplicative factor relating SMD to JD,
+  assuming no intercept. Think of this as the raw CT scale estimate.
+
+- **`alpha_ct`**  
+  **Physically constrained** CT-like scaling factor.  
+  We want a factor `alpha` such that:
+  - It’s close to `alpha0_through_origin`, **and**
+  - It respects the physical constraint `alpha * I_{sm} ≤ I_JD`.
+
+  To enforce that, we cap `alpha` using the robust lower bound:
+  $
+    \alpha_\text{ct} = \min(\alpha_0, \text{ratio\_p05})
+  $  
+  This is the factor you’d use if you want to scale SMD up towards JD
+  without letting it overshoot the Janitza readings.
+
+---
+
+#### Coverage and expected scaling
+
+- **`per_completed`**  
+  Smart-meter rollout completeness for this substation (0–1).  
+  Example: 0.9 means 90% of meters are present in SMD, 10% missing/unmetered.
+
+- **`n_mps`**  
+  Number of metering points (smart meters) contributing to this substation.
+
+- **`expected_alpha_from_coverage`**  
+  What the JD/SMD ratio would be **if the only issue was missing meters**,  
+  assuming missing customers have similar behaviour to the ones we see:
+  $
+  \text{expected\_alpha} = \frac{1}{\text{per\_completed}}
+  $
+  Example: per_completed = 0.8 → expected JD/SMD ≈ 1 / 0.8 = 1.25.
+
+- **`alpha_over_expected`**  
+  How much larger the CT factor is than what coverage alone would explain:
+  $
+  \alpha_\text{over\_expected} = \frac{\alpha_\text{ct}}{\text{expected\_alpha}}
+  $  
+  - ≈ 1 → mismatch can be explained mostly by missing meters.  
+  - >> 1 → JD still much bigger than SMD even after accounting for per_completed  
+    → strong hint of CT mis-scaling (or some other systematic error).
+
+---
+
+#### Physical consistency
+
+- **`frac_sm_gt_jn`**  
+  Fraction of timestamps where `I_total_sm > I_total_jn`.  
+  If Janitza really is the “ground truth” upper bound, this should be near 0.  
+  High values mean: topology issue, JD under-reading, SMD over-reading, etc.
+
+- **`n_points`**  
+  Number of time samples used for this substation **after** filtering out low
+  currents. This is the effective sample size for all the stats above.
+"""
