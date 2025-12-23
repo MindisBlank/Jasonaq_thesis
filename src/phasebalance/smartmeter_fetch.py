@@ -39,11 +39,15 @@ def fetch_and_save_smartmeter_voltage(
     `time_res`, and save to a local file.
 
     Output columns:
-      substation_id, ts, V_a, V_b, V_c, per_completed
+      substation_id, transformer, ts, V_a, V_b, V_c, per_completed
+
+    NOTE:
+      This expects your _build_meteringpoint_frames(...) to return mp_completed/mp_status
+      that include a 'transformer' column derived from metering_points.dspennir (1->sp1, 2->sp2).
     """
     spark = get_spark()
 
-    # Re-use mapping + per_completed from your existing helper
+    # Re-use mapping + per_completed from your existing helper (now transformer-aware)
     mp_completed, mp_status = _build_meteringpoint_frames(spark, substation_ids)
 
     sm_ts = spark.read.table("veiturdata_base_prd.ami.smartmeter")
@@ -64,12 +68,13 @@ def fetch_and_save_smartmeter_voltage(
             F.col("value").cast("double").alias("value_V"),
             "meteringpointid",
             "substation_id",
+            "transformer",  # 👈 NEW
         )
     )
 
-    # 2) Deduplicate per (substation, meter, phase, ts)
+    # 2) Deduplicate per (substation, transformer, meter, phase, ts)
     w = Window.partitionBy(
-        "substation_id", "meteringpointid", "resulttype", "ts"
+        "substation_id", "transformer", "meteringpointid", "resulttype", "ts"
     ).orderBy(F.col("ts"))
 
     joined_dedup = (
@@ -78,21 +83,21 @@ def fetch_and_save_smartmeter_voltage(
         .drop("rn")
     )
 
-    # 3) Aggregate voltages to time_res using average per substation & phase
+    # 3) Aggregate voltages to time_res using average per (substation, transformer) & phase
     v_per_phase_res = (
         joined_dedup
         .withColumn("ts_res", F.window("ts", time_res).start)
-        .groupBy("substation_id", "ts_res", "resulttype")
+        .groupBy("substation_id", "transformer", "ts_res", "resulttype")
         .agg(F.avg("value_V").alias("V_res"))
     )
 
     # 4) Pivot phases → V_a / V_b / V_c
     v_pivot = (
-        v_per_phase_res.groupBy("substation_id", "ts_res")
+        v_per_phase_res.groupBy("substation_id", "transformer", "ts_res")
         .pivot("resulttype", Voltage_PHASES)
         .agg(F.first("V_res"))
         .withColumnRenamed("ts_res", "ts")
-        .orderBy("substation_id", "ts")
+        .orderBy("substation_id", "transformer", "ts")
     )
 
     result = (
@@ -102,14 +107,28 @@ def fetch_and_save_smartmeter_voltage(
         .withColumnRenamed(Voltage_PHASES[2], "V_c")
     )
 
-    # 5) Attach per_completed (same as current pipeline)
+    # 5) Attach per_completed per (substation, transformer)
     result = result.join(
-        mp_status.select("substation_id", "per_completed"),
-        on="substation_id",
+        mp_status.select("substation_id", "transformer", "per_completed"),
+        on=["substation_id", "transformer"],
         how="left",
     )
 
-    # 6) Save to disk
+    # 6) Final column order
+    result = (
+        result.select(
+            "substation_id",
+            "transformer",
+            "ts",
+            "V_a",
+            "V_b",
+            "V_c",
+            "per_completed",
+        )
+        .orderBy("substation_id", "transformer", "ts")
+    )
+
+    # 7) Save to disk
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     pdf = result.toPandas()
@@ -235,8 +254,8 @@ def load_substations_from_parquet(parquet_path: str | Path) -> list[int]:
 def _build_meteringpoint_frames(spark, substation_ids):
     """
     Returns:
-      mp_completed: metering points (only Completed) with mp_id + substation_id
-      mp_status: per-substation per_completed + counts
+      mp_completed: metering points (only Completed/non-planned) with mp_id + substation_id + transformer
+      mp_status: per-(substation, transformer) per_completed + counts
     """
     mp = spark.read.table("veiturdata_enriched_prd.utilities.metering_points")
 
@@ -247,38 +266,43 @@ def _build_meteringpoint_frames(spark, substation_ids):
             & (F.col("lh_is_current") == F.lit(True))
             & (F.col("er_flutningur") == F.lit("N"))
         )
+        # 👇 NEW: transformer label from dspennir (1/2)
+        .withColumn(
+            "transformer",
+            F.when(F.col("dspennir") == F.lit(1), F.lit("sp1"))
+             .when(F.col("dspennir") == F.lit(2), F.lit("sp2"))
+             .otherwise(F.lit(None))
+        )
     )
 
-    # Per-substation fraction of Completed installations
+    # Per-(substation, transformer) fraction of Completed installations
     mp_status = (
-        mp_base.groupBy("dreifistodvanumer")
+        mp_base.groupBy("dreifistodvanumer", "transformer")
         .agg(
-            F.sum(
-                F.when(F.col("uppsetningar_stada") == "Completed", 1).otherwise(0)
-            ).alias("n_completed"),
+            F.sum(F.when(F.col("uppsetningar_stada") == "Completed", 1).otherwise(0)).alias("n_completed"),
             F.count("*").alias("n_total_mps"),
         )
         .withColumn(
             "per_completed",
-            F.when(
-                F.col("n_total_mps") > 0,
-                F.col("n_completed") / F.col("n_total_mps"),
-            ).otherwise(F.lit(None)),
+            F.when(F.col("n_total_mps") > 0, F.col("n_completed") / F.col("n_total_mps"))
+             .otherwise(F.lit(None)),
         )
         .select(
             F.col("dreifistodvanumer").alias("substation_id"),
+            "transformer",
             "per_completed",
             "n_completed",
             "n_total_mps",
         )
     )
 
-    # Only metering points with uppsetningar_stada == 'Completed'
+    # Only metering points with uppsetningar_stada != 'planned'
     mp_completed = (
         mp_base.filter(F.col("uppsetningar_stada") != F.lit("planned"))
         .select(
             F.col("husveita_fastanumer").cast("string").alias("mp_id"),
             F.col("dreifistodvanumer").alias("substation_id"),
+            "transformer",
         )
     )
 
@@ -323,13 +347,15 @@ def fetch_and_save_smartmeter(
             F.col("value").cast("double").alias("value_A"),
             "meteringpointid",
             "substation_id",
+            "transformer",   # 👈 NEW
         )
     )
 
     # 2) Deduplicate per (substation, meter, phase, ts)
     w = Window.partitionBy(
-        "substation_id", "meteringpointid", "resulttype", "ts"
+    "substation_id", "transformer", "meteringpointid", "resulttype", "ts"
     ).orderBy(F.col("ts"))
+
 
     joined_dedup = (
         joined.withColumn("rn", F.row_number().over(w))
@@ -339,32 +365,33 @@ def fetch_and_save_smartmeter(
 
     # 3) Sum current per (substation, ts, phase) at native resolution
     sum_per_phase = (
-        joined_dedup.groupBy("substation_id", "ts", "resulttype")
-        .agg(F.sum("value_A").alias("sum_A"))
-    )
+    joined_dedup.groupBy("substation_id", "transformer", "ts", "resulttype")
+    .agg(F.sum("value_A").alias("sum_A"))
+)
+
 
     # 3b) Aggregate currents to time_res (e.g. 15 minutes) using avg over window
     sum_per_phase_res = (
         sum_per_phase.withColumn("ts_res", F.window("ts", time_res).start)
-        .groupBy("substation_id", "ts_res", "resulttype")
+        .groupBy("substation_id", "transformer", "ts_res", "resulttype")
         .agg(F.avg("sum_A").alias("sum_A_res"))
     )
 
     # 3c) n_mps at aggregated resolution: distinct meters per (substation, ts_res)
     n_mps_res = (
         joined_dedup.withColumn("ts_res", F.window("ts", time_res).start)
-        .groupBy("substation_id", "ts_res")
+        .groupBy("substation_id", "transformer", "ts_res")
         .agg(F.countDistinct("meteringpointid").alias("n_mps"))
         .withColumnRenamed("ts_res", "ts")  # <- add this
     )
 
     # 4) Pivot phases → I_a / I_b / I_c
     substation_currents_res = (
-        sum_per_phase_res.groupBy("substation_id", "ts_res")
+        sum_per_phase_res.groupBy("substation_id", "transformer", "ts_res")
         .pivot("resulttype", phases)
         .agg(F.first("sum_A_res"))
         .withColumnRenamed("ts_res", "ts")
-        .orderBy("substation_id", "ts")
+        .orderBy("substation_id", "transformer", "ts")
     )
 
     # Rename phase columns to I_a / I_b / I_c
@@ -376,8 +403,13 @@ def fetch_and_save_smartmeter(
     )
 
     # 5) Join n_mps and per_completed
-    result = result.join(n_mps_res, on=["substation_id", "ts"], how="left")
-    result = result.join(mp_status.select("substation_id", "per_completed"), on="substation_id", how="left")
+    result = result.join(n_mps_res, on=["substation_id", "transformer", "ts"], how="left")
+    result = result.join(
+        mp_status.select("substation_id", "transformer", "per_completed"),
+        on=["substation_id", "transformer"],
+        how="left",
+    )
+
 
     # 6) Total current
     result = result.withColumn(
@@ -391,6 +423,7 @@ def fetch_and_save_smartmeter(
     result = (
         result.select(
             "substation_id",
+            "transformer",   # 👈 NEW
             "ts",
             "I_a",
             "I_b",
@@ -450,7 +483,7 @@ if __name__ == "__main__":
 
 
     # 3) Build output path dynamically
-    out_path = Path("data") / f"smartmeter_15min_all_from_devices_{start_tag}_{end_tag}_{Profile}.parquet"
+    out_path = Path("data") / f"smartmeter_15min_all_by_transformer_{start_tag}_{end_tag}_{Profile}.parquet"
 
     fetch_and_save_smartmeter(
         substation_ids=substation_ids,

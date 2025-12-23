@@ -101,7 +101,6 @@ def load_unique_dnr_str(devices_csv: Path) -> list[str]:
     )
     return dnr_list
 
-
 def plot_multi_phase(
     *,
     device_id: int ,
@@ -164,7 +163,6 @@ def plot_multi_phase(
 
     return fig, ax, df
 
-
 def _combine_phase_series(phase_to_series_list: dict, how: str = "sum") -> pd.DataFrame:
     """
     phase_to_series_list: {"Input01": [Series(dev1), Series(dev2), ...], ...}
@@ -189,7 +187,6 @@ def _combine_phase_series(phase_to_series_list: dict, how: str = "sum") -> pd.Da
     # Drop rows where all phases are NaN
     df = df.dropna(how="all")
     return df
-
 
 def plot_multi_phase_multi_device(
     *,
@@ -266,7 +263,6 @@ def plot_multi_phase_multi_device(
 
     return fig, ax, df
 
-
 def _load_metadata(devices_csv: Path, capabilities_csv: Optional[Path]) -> tuple[pd.DataFrame, Optional[pd.DataFrame]]:
     """Load devices and optional capabilities metadata.
 
@@ -285,6 +281,21 @@ def _load_metadata(devices_csv: Path, capabilities_csv: Optional[Path]) -> tuple
         caps = pd.read_csv(capabilities_csv)
     return devices, caps
 
+def _transformer_from_feeder(feeder: object) -> Optional[str]:
+    """
+    Normalize devices.csv feeder -> 'sp1' or 'sp2' (or None if unknown).
+
+    Works for values like:
+      'SP1', 'sp1', 'SP1 L2', 'D0029 SP1 L2', etc.
+    """
+    if feeder is None:
+        return None
+    s = str(feeder).strip().lower()
+    if "sp1" in s:
+        return "sp1"
+    if "sp2" in s:
+        return "sp2"
+    return None
 
 def _devices_for_dnr(devices: pd.DataFrame, dnr_str: str) -> pd.DataFrame:
     """Filter the devices table for a specific ``dnr_str``."""
@@ -293,7 +304,6 @@ def _devices_for_dnr(devices: pd.DataFrame, dnr_str: str) -> pd.DataFrame:
         raise KeyError("devices.csv must contain a 'dnr_str' column")
     mask = devices["dnr_str"].astype(str).str.fullmatch(str(dnr_str))
     return devices.loc[mask].copy()
-
 
 def _phases_for_measurement(
     capabilities: Optional[pd.DataFrame],
@@ -342,7 +352,6 @@ def _phases_for_measurement(
 
     return sorted(phase_candidates.keys())
 
-
 def plot_substation_measurement(
     *,
     dnr_str: str,
@@ -357,6 +366,7 @@ def plot_substation_measurement(
     combine: str = "sum",
     show: bool = True,
     profile: str = "3phase_I",
+    transformer: Optional[str] = None,   # 👈 NEW
 ):
     """
     Plot a measurement for all devices that belong to a substation.
@@ -392,6 +402,18 @@ def plot_substation_measurement(
     substation_devices = _devices_for_dnr(devices, dnr_str)
     if substation_devices.empty:
         raise ValueError(f"No devices found for dnr_str '{dnr_str}'.")
+
+    # 👇 NEW: optionally filter devices to a transformer (sp1/sp2) using feeder column
+    if transformer is not None:
+        if "feeder" not in substation_devices.columns:
+            raise KeyError("devices.csv must contain a 'feeder' column to filter by transformer.")
+        tnorm = str(transformer).strip().lower()
+        substation_devices = substation_devices[
+            substation_devices["feeder"].apply(_transformer_from_feeder) == tnorm
+        ].copy()
+        if substation_devices.empty:
+            raise ValueError(f"No devices found for dnr_str '{dnr_str}' on transformer '{tnorm}'.")
+
 
     device_ids = substation_devices["device_id"].astype(str).tolist()
 
@@ -528,7 +550,8 @@ def plot_substation_measurement(
     fig, ax = plt.subplots(figsize=(11, 5))
     df.plot(ax=ax)
 
-    title = f"Substation {dnr_str} ({profile})"
+    tx = f" | {transformer.lower()}" if transformer else ""
+    title = f"Substation {dnr_str}{tx} ({profile})"
     ax.set_title(f"{title} : {value_backend} ({which})  [{start} → {end}]  TB={timebase}")
     ax.set_xlabel("Time (UTC)")
     ax.set_ylabel(unit_hint)
@@ -540,7 +563,6 @@ def plot_substation_measurement(
         plt.show()
 
     return fig, ax, df
-
 
 def fetch_substation_timeseries(
     *,
@@ -555,6 +577,7 @@ def fetch_substation_timeseries(
     auth_token: Optional[str] = None,
     combine: str = "sum",
     profile: str = "3phase_I",
+    transformer: Optional[str] = None,   # 👈 NEW
 ) -> pd.DataFrame:
     """
     Fetch combined Janitza measurement for one substation as a tidy DataFrame.
@@ -587,6 +610,7 @@ def fetch_substation_timeseries(
         combine=combine,
         show=False,           # ← do NOT open a plot
         profile=profile,
+        transformer=transformer,   # 👈 NEW
     )
 
     if df is None or df.empty:
@@ -662,12 +686,15 @@ if __name__ == "__main__":
     parser.add_argument("--no-show", action="store_true", help="Fetch data without displaying the plot")
     parser.add_argument("--batch-all",action="store_true",help="Instead of plotting a single substation, export a parquet file for ALL substations (unique dnr_str from devices.csv).",)
     parser.add_argument("--out-parquet",default=None,help="Output parquet path for batch mode. If not set, a name is built from the time range.",)
+    parser.add_argument("--transformer", default=None, help="Transformer filter: sp1 or sp2 (uses devices.csv feeder)")
+
 
     args = parser.parse_args()
 
     if args.batch_all:
         # --- BATCH MODE: all substations from devices.csv ---
         devices_path = Path(args.devices_csv)
+        devices_meta = pd.read_csv(devices_path)
         caps_path = Path(args.capabilities_csv) if args.capabilities_csv else None
 
         dnr_list = load_unique_dnr_str(devices_path)
@@ -677,31 +704,56 @@ if __name__ == "__main__":
         frames = []
         for dnr in dnr_list:
             print(f"\n=== Substation {dnr} ===")
-            df_sub = fetch_substation_timeseries(
-                dnr_str=dnr,
-                value_backend=args.value_backend,
-                devices_csv=devices_path,
-                capabilities_csv=caps_path,
-                timebase=args.timebase,
-                start=args.start,
-                end=args.end,
-                which=args.which,
-                auth_token=args.auth_token,
-                combine=args.combine,
-                profile=args.profile,
-            )
-            if df_sub.empty:
-                print("  -> no data, skipping")
-                continue
 
-            df_sub["dnr_str"] = dnr
-            frames.append(df_sub)
+            sub_dev = devices_meta[devices_meta["dnr_str"].astype(str).str.fullmatch(str(dnr))].copy()
+            if sub_dev.empty:
+                print("  -> no devices, skipping")
+                continue
+            if "feeder" not in sub_dev.columns:
+                raise KeyError("devices.csv must contain a 'feeder' column for transformer grouping.")
+
+            transformers = sorted({
+                _transformer_from_feeder(x) for x in sub_dev["feeder"].tolist()
+                if _transformer_from_feeder(x) is not None
+            })
+
+            # If no SP1/SP2 found, fall back to old behavior (whole substation)
+            if not transformers:
+                transformers = [None]
+
+            for tr in transformers:
+                tag = tr if tr else "all"
+                print(f"  -> transformer: {tag}")
+
+                df_sub = fetch_substation_timeseries(
+                    dnr_str=dnr,
+                    value_backend=args.value_backend,
+                    devices_csv=devices_path,
+                    capabilities_csv=caps_path,
+                    timebase=args.timebase,
+                    start=args.start,
+                    end=args.end,
+                    which=args.which,
+                    auth_token=args.auth_token,
+                    combine=args.combine,
+                    profile=args.profile,
+                    transformer=tr,   # 👈 NEW
+                )
+                if df_sub.empty:
+                    print("     -> no data, skipping")
+                    continue
+
+                df_sub["dnr_str"] = dnr
+                df_sub["transformer"] = tr if tr else "all"   # 👈 NEW COLUMN
+                frames.append(df_sub)
+
 
         if not frames:
             print("No Janitza data found for any substation - nothing to save.")
         else:
             all_df = pd.concat(frames, ignore_index=True)
-            all_df = all_df.sort_values(["dnr_str", "ts"])
+            all_df = all_df.sort_values(["dnr_str", "transformer", "ts"])
+
 
             # Build default output path if not provided
             if args.out_parquet is not None:
@@ -733,4 +785,5 @@ if __name__ == "__main__":
             combine=args.combine,
             show=not args.no_show,
             profile=args.profile,
+            transformer=args.transformer,
         )
