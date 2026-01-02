@@ -27,12 +27,63 @@ Voltage_PHASES = [
     "LPQ_Voltage_L3_AVG",
 ]
 
+def load_substation_transformers_from_parquet(parquet_path: str | Path) -> list[tuple[int, str]]:
+    """
+    Read a parquet file and return a sorted list of (substation_id, transformer)
+    pairs inferred from columns:
+      - dnr_str (e.g. 'D0411' -> 411)
+      - transformer (e.g. 'sp1'/'sp2' or 'all')
+
+    Returns only sp1/sp2 pairs (drops 'all' and nulls).
+    """
+    parquet_path = Path(parquet_path)
+
+    try:
+        df = pd.read_parquet(parquet_path, columns=["dnr_str", "transformer"])
+    except Exception:
+        df = pd.read_parquet(parquet_path)
+
+    if "dnr_str" not in df.columns:
+        raise ValueError(
+            f"'dnr_str' column not found in {parquet_path}. "
+            f"Available columns: {list(df.columns)}"
+        )
+    if "transformer" not in df.columns:
+        raise ValueError(
+            f"'transformer' column not found in {parquet_path}. "
+            f"Available columns: {list(df.columns)}"
+        )
+
+    d = df[["dnr_str", "transformer"]].dropna().copy()
+    d["dnr_str"] = d["dnr_str"].astype(str).str.strip()
+    d["transformer"] = d["transformer"].astype(str).str.strip().str.lower()
+
+    # Keep only sp1/sp2 (drop 'all' or anything else)
+    d = d[d["transformer"].isin(["sp1", "sp2"])]
+
+    d["substation_id"] = d["dnr_str"].map(_parse_substation_name)
+    d = d.dropna(subset=["substation_id"])
+    d["substation_id"] = d["substation_id"].astype(int)
+
+    pairs = (
+        d[["substation_id", "transformer"]]
+        .drop_duplicates()
+        .sort_values(["substation_id", "transformer"])
+        .apply(lambda r: (int(r["substation_id"]), str(r["transformer"])), axis=1)
+        .tolist()
+    )
+
+    print(f"Found {len(pairs)} (substation_id, transformer) pairs in parquet: {parquet_path}")
+    print("First few:", pairs[:10])
+    return pairs
+
 def fetch_and_save_smartmeter_voltage(
     substation_ids,
     start_date: str,
     end_date: str,
     output_path: str,
-    time_res: str = TIME_RES,  # e.g. "15 minutes"
+    time_res: str = TIME_RES,
+    substation_transformers: list[tuple[int, str]] | None = None,  # 👈 NEW
 ):
     """
     Fetch smartmeter voltages for given substations and time window, aggregate to
@@ -48,7 +99,7 @@ def fetch_and_save_smartmeter_voltage(
     spark = get_spark()
 
     # Re-use mapping + per_completed from your existing helper (now transformer-aware)
-    mp_completed, mp_status = _build_meteringpoint_frames(spark, substation_ids)
+    mp_completed, mp_status = _build_meteringpoint_frames(spark, substation_ids,substation_transformers=substation_transformers,)
 
     sm_ts = spark.read.table("veiturdata_base_prd.ami.smartmeter")
 
@@ -251,22 +302,23 @@ def load_substations_from_parquet(parquet_path: str | Path) -> list[int]:
 
     return substation_ids
 
-def _build_meteringpoint_frames(spark, substation_ids):
+def _build_meteringpoint_frames(spark, substation_ids, substation_transformers: list[tuple[int, str]] | None = None):
     """
     Returns:
       mp_completed: metering points (only Completed/non-planned) with mp_id + substation_id + transformer
       mp_status: per-(substation, transformer) per_completed + counts
+
+    If substation_transformers is provided ([(substation_id,'sp1'),...]),
+    we filter metering points down to ONLY those (substation, transformer) pairs.
     """
     mp = spark.read.table("veiturdata_enriched_prd.utilities.metering_points")
 
-    # Base filter: current + non-transport + in our substation list
     mp_base = (
         mp.filter(
             (F.col("dreifistodvanumer").isin(substation_ids))
             & (F.col("lh_is_current") == F.lit(True))
             & (F.col("er_flutningur") == F.lit("N"))
         )
-        # 👇 NEW: transformer label from dspennir (1/2)
         .withColumn(
             "transformer",
             F.when(F.col("dspennir") == F.lit(1), F.lit("sp1"))
@@ -275,7 +327,22 @@ def _build_meteringpoint_frames(spark, substation_ids):
         )
     )
 
-    # Per-(substation, transformer) fraction of Completed installations
+    # 👇 NEW: hard filter to only pairs you actually have Janitza for
+    if substation_transformers:
+        allowed_df = (
+            spark.createDataFrame(substation_transformers, ["substation_id", "transformer"])
+            .dropDuplicates()
+            .withColumnRenamed("transformer", "transformer_allowed")
+        )
+
+        mp_base = mp_base.join(
+            allowed_df,
+            (mp_base["dreifistodvanumer"] == allowed_df["substation_id"])
+            & (mp_base["transformer"] == allowed_df["transformer_allowed"]),
+            "inner",
+        ).drop("substation_id", "transformer_allowed")
+
+
     mp_status = (
         mp_base.groupBy("dreifistodvanumer", "transformer")
         .agg(
@@ -296,7 +363,6 @@ def _build_meteringpoint_frames(spark, substation_ids):
         )
     )
 
-    # Only metering points with uppsetningar_stada != 'planned'
     mp_completed = (
         mp_base.filter(F.col("uppsetningar_stada") != F.lit("planned"))
         .select(
@@ -315,6 +381,7 @@ def fetch_and_save_smartmeter(
     output_path: str,
     time_res: str = TIME_RES,
     phases: list[str] = PHASES,
+    substation_transformers: list[tuple[int, str]] | None = None,
 ):
     """
     Fetch smartmeter data for given substations and time window, aggregate to
@@ -326,7 +393,7 @@ def fetch_and_save_smartmeter(
     spark = get_spark()
 
     # --- Metering point info (mapping + per_completed) ---
-    mp_completed, mp_status = _build_meteringpoint_frames(spark, substation_ids)
+    mp_completed, mp_status = _build_meteringpoint_frames(spark, substation_ids, substation_transformers=substation_transformers)
 
     # --- Smartmeter raw table ---
     sm_ts = spark.read.table("veiturdata_base_prd.ami.smartmeter")
@@ -456,16 +523,15 @@ def fetch_and_save_smartmeter(
 
 if __name__ == "__main__":
 
-    janitza_parquet_path = Path("data/janitza_3phase_I_all_20250801_0000_20251101_0000.parquet")
+    janitza_parquet_path = Path("data/janitza_3phase_I_by_transformer_20250801_0000_20251101_0000.parquet")
 
     # 1) Build list of distinct substation IDs from devices.csv
-    substation_ids = load_substations_from_parquet(janitza_parquet_path)
+    pairs = load_substation_transformers_from_parquet(janitza_parquet_path)
+    substation_ids = sorted({sid for sid, _ in pairs})
 
-    #substation_ids = substation_ids[:2]  # TEMP: only first 5 for testing
-
-    print(f"Found {len(substation_ids)} substations from parquet.")
-    print("First few:", substation_ids[:10])
-
+    print(f"Found {len(substation_ids)} substations from parquet pairs.")
+    print("First few substations:", substation_ids[:10])
+    print("First few (substation, transformer) pairs:", pairs[:10])
 
     # define the profile
     Profile = PHASES
@@ -491,7 +557,8 @@ if __name__ == "__main__":
         end_date=end,
         output_path=str(out_path),
         time_res="15 minutes",
-        phases=Profile
+        phases=Profile,
+        substation_transformers=pairs,
     )
 
     # fetch_and_save_smartmeter_voltage(
@@ -500,4 +567,5 @@ if __name__ == "__main__":
     #     end_date=end,
     #     output_path=str(out_path),
     #     time_res="10 minutes",
+    #     substation_transformers=pairs,
     # )
