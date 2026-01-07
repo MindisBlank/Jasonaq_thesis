@@ -537,8 +537,8 @@ if __name__ == "__main__":
     Profile = PHASES
 
     # 2) Define time window
-    start = "2025-08-01 00:00:00"
-    end   = "2025-11-01 00:00:00"
+    start = "2025-11-01 12:00:00"
+    end   = "2025-11-03 12:00:00"
 
     #Turn start/end into compact tags for the filename
     fmt_in = "%Y-%m-%d %H:%M:%S"

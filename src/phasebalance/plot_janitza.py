@@ -1,11 +1,9 @@
-"""Tools for fetching and plotting a single Janitza variable for one device.
+"""Tools for fetching and plotting a Janitza variable for multiple devices.
 
-This module reads the capabilities table to discover which phases/channels a
-device exposes for a given variable (e.g., ``I_Effective``). It then calls the
-existing :func:`fetch_hist_json` helper to pull historical values for each
-channel over a configurable window, returning a tidy ``DataFrame`` indexed by
-UTC timestamps. Results can be visualised with ``matplotlib`` or saved as a
-Parquet file.
+This module reads the capabilities table to discover which phases/channels
+devices expose for a given variable. It fetches historical values for all 
+requested devices, combines them into a single DataFrame, and plots them
+individually and as a grand total.
 """
 
 from __future__ import annotations
@@ -56,17 +54,16 @@ def _load_channels(
     )
 
     if not channels:
-        raise ValueError(
-            f"No channels found for device {device_id} and variable {variable_backend} "
-            f"in {capabilities_csv}."
-        )
+        # We return empty list instead of raising error to allow partial success
+        # when fetching multiple devices
+        return []
 
     return channels
 
 
-def fetch_device_variable(
+def fetch_multidevice_variable(
     *,
-    device_id: int,
+    device_ids: list[int],
     variable_backend: str,
     timebase: str | int,
     start: str,
@@ -76,111 +73,135 @@ def fetch_device_variable(
     which: str = "avg",
     auth_token: Optional[str] = None,
 ) -> pd.DataFrame:
-    """Fetch one variable for a device across all available channels.
-
-    Parameters
-    ----------
-    device_id
-        Janitza device identifier.
-    variable_backend
-        Backend name such as ``"I_Effective"`` or ``"U_Effective"``.
-    timebase
-        Cadence accepted by :func:`fetch_hist_json`, e.g., ``"15m"`` or ``900``.
-    start, end
-        Time window (e.g., ``"-7d"`` to ``"now"``).
-    capabilities_csv
-        Path to the capabilities table produced by ``janitza_value_fetch.py``.
-    phases
-        Optional iterable of phase/type backends to restrict to (e.g.,
-        ``["Input01", "Input02", "Input03"]``). When omitted, all available
-        channels for the variable are pulled.
-    which
-        Which field to extract from each sample: ``"avg"`` (default), ``"min"``,
-        or ``"max"``.
-    auth_token
-        Optional bearer token for GridVis.
+    """Fetch variable for multiple devices and combine into one DataFrame.
 
     Returns
     -------
     pandas.DataFrame
-        Columns correspond to phase/type backends, indexed by UTC timestamps.
+        Columns are named 'D{device_id}:{channel}'.
     """
 
-    channels = _load_channels(
-        capabilities_csv=capabilities_csv,
-        device_id=device_id,
-        variable_backend=variable_backend,
-        phases=phases,
-    )
+    all_series = {}
 
-    series = {}
-    for phase_backend in channels:
-        payload = fetch_hist_json(
-            device_id=device_id,
+    for dev_id in set(device_ids):
+        # 1. Discover channels for this specific device
+        channels = _load_channels(
+            capabilities_csv=capabilities_csv,
+            device_id=dev_id,
             variable_backend=variable_backend,
-            phase_backend=phase_backend,
-            timebase=timebase,
-            start=start,
-            end=end,
-            auth_token=auth_token,
-            dry_run=False,
+            phases=phases,
         )
 
-        s = _series_from_values(payload, which)
-        if s.empty:
-            print(f"⚠️  No data for {phase_backend} in window {start} → {end}.")
-        series[phase_backend] = s.rename(phase_backend)
+        if not channels:
+            print(f"⚠️  Skipping Device {dev_id}: No channels found for {variable_backend}.")
+            continue
 
-    if not series:
+        # 2. Fetch data for each channel
+        for phase_backend in channels:
+            payload = fetch_hist_json(
+                device_id=dev_id,
+                variable_backend=variable_backend,
+                phase_backend=phase_backend,
+                timebase=timebase,
+                start=start,
+                end=end,
+                auth_token=auth_token,
+                dry_run=False,
+            )
+
+            s = _series_from_values(payload, which)
+            
+            if s.empty:
+                print(f"⚠️  No data for Device {dev_id} - {phase_backend} in window.")
+            else:
+                # 3. Rename series to include Device ID so columns don't collide
+                unique_col_name = f"D{dev_id}:{phase_backend}"
+                all_series[unique_col_name] = s.rename(unique_col_name)
+
+    if not all_series:
         return pd.DataFrame()
 
-    df = pd.concat(series.values(), axis=1, join="outer").sort_index()
+    # Combine all devices and phases into one big DataFrame
+    df = pd.concat(all_series.values(), axis=1, join="outer").sort_index()
     return df
 
 
-def plot_variable(
+def plot_multidevice(
     df: pd.DataFrame,
     *,
-    device_id: int,
+    device_ids: list[int],
     variable_backend: str,
     which: str,
     start: str,
     end: str,
     show: bool = True,
 ):
-    """Render a simple line plot for the fetched variable."""
+    """Render two subplots: individual channels (all devices) and a grand total."""
 
     if df.empty:
         print("❌ Nothing to plot: empty DataFrame.")
         return None, None
 
-    fig, ax = plt.subplots(figsize=(11, 5))
-    df.plot(ax=ax)
+    # Create two subplots sharing the X-axis
+    fig, (ax1, ax2) = plt.subplots(nrows=2, ncols=1, figsize=(12, 10), sharex=True)
 
-    ax.set_title(
-        f"Device {device_id} – {variable_backend} ({which})  [{start} → {end}]"
+    # --- Subplot 1: All Individual Channels ---
+    df.plot(ax=ax1)
+    
+    dev_str = ", ".join(map(str, device_ids))
+    if len(device_ids) > 5:
+        dev_str = f"{len(device_ids)} Devices"
+
+    ax1.set_title(
+        f"Devices [{dev_str}] – {variable_backend} ({which}) – Individual Channels"
     )
-    ax.set_xlabel("Time (UTC)")
-    ax.set_ylabel(variable_backend)
-    ax.grid(True, alpha=0.3)
-    ax.legend(title="Phase/Channel", ncols=min(df.shape[1], 3))
+    ax1.set_ylabel(variable_backend)
+    ax1.grid(True, alpha=0.3)
+    
+    # Place legend outside if there are too many items
+    if len(df.columns) > 10:
+        ax1.legend(title="Device:Channel", bbox_to_anchor=(1.02, 1), loc='upper left', borderaxespad=0)
+    else:
+        ax1.legend(title="Device:Channel", loc="best")
 
+    # --- Subplot 2: Grand Total (Sum) ---
+    # Sum across all columns (all devices, all phases)
+    combined_series = df.sum(axis=1)
+    combined_series.plot(ax=ax2, color="black", linestyle="-", linewidth=2)
+    
+    ax2.set_title("Grand Total (Sum of all devices & phases)")
+    ax2.set_xlabel("Time (UTC)")
+    ax2.set_ylabel(f"Total {variable_backend}")
+    ax2.grid(True, alpha=0.3)
+    ax2.legend(["Grand Total"], loc="upper right")
+
+    # Main title
+    fig.suptitle(f"Multi-Device Analysis: {start} → {end}", fontsize=12)
+
+    plt.tight_layout()
+    
     if show:
-        plt.tight_layout()
         plt.show()
 
-    return fig, ax
+    return fig, (ax1, ax2)
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Fetch all channels for a single Janitza variable on one device and "
-            "either plot or save as Parquet."
+            "Fetch channels for multiple Janitza devices and plot them individually and combined."
         )
     )
 
-    parser.add_argument("--device-id", type=int, required=True, help="Janitza device ID")
+    # Changed to nargs='+' to accept multiple IDs
+    parser.add_argument(
+        "--device-id", 
+        type=int, 
+        nargs='+', 
+        required=True, 
+        help="List of Janitza device IDs (e.g. 207 208 209)"
+    )
+    
     parser.add_argument(
         "--variable",
         default="I_Effective",
@@ -215,7 +236,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--no-plot",
         action="store_true",
-        help="Skip plotting (useful when only exporting Parquet)",
+        help="Skip plotting",
     )
 
     return parser
@@ -224,8 +245,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[list[str]] = None):
     args = _build_arg_parser().parse_args(argv)
 
-    df = fetch_device_variable(
-        device_id=args.device_id,
+    df = fetch_multidevice_variable(
+        device_ids=args.device_id,
         variable_backend=args.variable,
         timebase=args.timebase,
         start=args.start,
@@ -245,9 +266,9 @@ def main(argv: Optional[list[str]] = None):
             print(f"✅ Saved Parquet to {args.parquet}")
 
     if not args.no_plot:
-        plot_variable(
+        plot_multidevice(
             df,
-            device_id=args.device_id,
+            device_ids=args.device_id,
             variable_backend=args.variable,
             which=args.which,
             start=args.start,
