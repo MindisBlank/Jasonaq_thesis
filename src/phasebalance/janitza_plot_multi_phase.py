@@ -370,31 +370,6 @@ def plot_substation_measurement(
 ):
     """
     Plot a measurement for all devices that belong to a substation.
-
-    Profiles
-    --------
-    profile = "3phase_I"
-        Uses CHANNEL_SPEC_I and plots three lines: IA, IB, IC.
-        Each line is the sum/mean of the corresponding phase across all devices.
-
-    profile = "3phase_I_all"
-        Same as ``3phase_I`` but after combining, IA+IB+IC are summed into a
-        single "I_total" line.
-
-    profile = "neutral_I"
-        Uses CHANNEL_SPEC_I4 and plots a single line: IA (neutral total).
-
-    profile = "sum13_Iseq"
-        Uses CHANNEL_SPEC_SEQ_I and plots I0, I1, I2 (sequence currents)
-        aggregated across devices.
-
-    profile = "3phase_V"
-        Uses CHANNEL_SPEC_V and plots three lines: VA, VB, VC.
-
-
-
-    Any other profile (or if you later extend this) falls back to the old
-    generic behaviour using _phases_for_measurement + plot_multi_phase_multi_device.
     """
 
     # --- Load metadata and select devices for this substation ---
@@ -402,6 +377,32 @@ def plot_substation_measurement(
     substation_devices = _devices_for_dnr(devices, dnr_str)
     if substation_devices.empty:
         raise ValueError(f"No devices found for dnr_str '{dnr_str}'.")
+
+    # # ========================================================================
+    # # 👇 NEW: Filter UMG 801 Measurement Groups
+    # # Rule: If typeDisplayName == "UMG 801 Measurement Group", only keep if name contains "Measurement Group 1"
+    # # ========================================================================
+    # if "typeDisplayName" in substation_devices.columns and "name" in substation_devices.columns:
+    #     is_801 = substation_devices["typeDisplayName"] == "UMG 801 Measurement Group"
+    #     # Safe string check for "Measurement Group 1"
+    #     is_valid_name = substation_devices["name"].astype(str).str.contains("Measurement Group 1", na=False)
+    #     is_valid_name = substation_devices["name"].astype(str).str.contains("Measurement Group 1", case=False, na=False)
+        
+    #     # We keep the row if:
+    #     # 1. It is NOT a UMG 801 (~is_801)
+    #     # OR
+    #     # 2. It IS a UMG 801 AND the name contains "Measurement Group 1"
+
+    #     dropped = substation_devices[is_801 & ~is_valid_name]
+    #     if not dropped.empty:
+    #         print(f"ℹ️  UMG 801 Filter dropping {len(dropped)} devices: {dropped['name'].tolist()}")
+
+    #     substation_devices = substation_devices[~is_801 | is_valid_name].copy()
+    
+    # if substation_devices.empty:
+    #     print(f"⚠️  No devices left for dnr_str '{dnr_str}' after UMG 801 filtering.")
+    #     return None, None, pd.DataFrame()
+    # # ========================================================================
 
     # 👇 NEW: optionally filter devices to a transformer (sp1/sp2) using feeder column
     if transformer is not None:
@@ -610,7 +611,7 @@ def fetch_substation_timeseries(
         combine=combine,
         show=False,           # ← do NOT open a plot
         profile=profile,
-        transformer=transformer,   # 👈 NEW
+        transformer=transformer,   
     )
 
     if df is None or df.empty:
