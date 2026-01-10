@@ -363,34 +363,34 @@ def compute_meter_metrics(
     Missing inputs return NaN or NaN-filled dicts.
     """
     results = {
-        "dib": NAN,
+    #    "dib": NAN,
         "vuf_magnitude": NAN,
-        "vuf_symmetrical": NAN,
-        "sequence_unbalance_factors": _SEQ_NANS.copy(),
+    #    "vuf_symmetrical": NAN,
+    #    "sequence_unbalance_factors": _SEQ_NANS.copy(),
         "cur_ratio": NAN,
         "cur_dev_ratio": NAN,
-        "neutral_from_trms_120deg": NAN,
+    #    "neutral_from_trms_120deg": NAN,
     }
 
     has_I = Ia is not None and Ib is not None and Ic is not None
     has_Vmag = Va_mag is not None and Vb_mag is not None and Vc_mag is not None
-    has_seq = (I0_mag is not None) and (I1_mag is not None) and (I2_mag is not None)
-    has_Vseq = (V0_mag is not None) and (V1_mag is not None) and (V2_mag is not None)
+    #has_seq = (I0_mag is not None) and (I1_mag is not None) and (I2_mag is not None)
+    #has_Vseq = (V0_mag is not None) and (V1_mag is not None) and (V2_mag is not None)
 
     # --- Current metrics ---
-    results["dib"] = _safe_call(has_I, dib, NAN, Ia, Ib, Ic)
+    #results["dib"] = _safe_call(has_I, dib, NAN, Ia, Ib, Ic)
     results["cur_ratio"] = _safe_call(has_I, cur_ratio, NAN, Ia, Ib, Ic)
     results["cur_dev_ratio"] = _safe_call(has_I, cur_dev_ratio, NAN, Ia, Ib, Ic)
-    results["neutral_from_trms_120deg"] = _safe_call(has_I, neutral_from_trms_120deg, NAN, Ia, Ib, Ic)
+    #results["neutral_from_trms_120deg"] = _safe_call(has_I, neutral_from_trms_120deg, NAN, Ia, Ib, Ic)
 
     # --- Voltage metrics ---
     results["vuf_magnitude"] = _safe_call(has_Vmag, vuf_magnitude, NAN, Va_mag, Vb_mag, Vc_mag)
-    results["vuf_symmetrical"] = _safe_call(has_Vseq, vuf_symmetrical, NAN, V0_mag, V1_mag, V2_mag)
+    #results["vuf_symmetrical"] = _safe_call(has_Vseq, vuf_symmetrical, NAN, V0_mag, V1_mag, V2_mag)
 
     # --- Sequence metrics ---
-    results["sequence_unbalance_factors"] = _safe_call(
-        has_seq, sequence_unbalance_factors, _SEQ_NANS.copy(), I0_mag, I1_mag, I2_mag
-    )
+    #results["sequence_unbalance_factors"] = _safe_call(
+    #    has_seq, sequence_unbalance_factors, _SEQ_NANS.copy(), I0_mag, I1_mag, I2_mag
+    #)
 
     return results
 
