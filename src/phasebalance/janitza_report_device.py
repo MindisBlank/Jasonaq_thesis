@@ -30,8 +30,13 @@ from matplotlib.collections import LineCollection
 from matplotlib.lines import Line2D
 import mpltern  # noqa: F401 — used by plot_ternary
 
-from janitza_fetch import fetch_hist_json
-from phase_unbalance_utils import cur_ratio, cur_dev_ratio, _series_from_values,_has_values,resolve_channels
+try:
+    from .janitza_fetch import fetch_hist_json
+    from .phase_unbalance_utils import cur_ratio, cur_dev_ratio, _series_from_values,_has_values,resolve_channels
+except ImportError:  # pragma: no cover - for running as a script
+    from janitza_fetch import fetch_hist_json
+    from phase_unbalance_utils import cur_ratio, cur_dev_ratio, _series_from_values,_has_values,resolve_channels
+
 
 # ---------------------------- Config & Constants -----------------------------
 CHANNEL_SPEC_I = {
@@ -227,10 +232,11 @@ def plot_colored_cur(
     start: str,
     end: str,
     dpi: int,
-    output_path: str,
-) -> None:
+    output_path: Optional[str] = None,
+):
     fig, ax = plt.subplots(figsize=(12, 4), dpi=dpi)
     ax.plot(df.index, df["imbalance"], color="#333333", linewidth=1.2, label=metric_name)
+
     for pair, color in PAIR_COLORS.items():
         mask = df["culprit_pair"] == pair
         for block in _contiguous_indices(mask):
@@ -240,10 +246,12 @@ def plot_colored_cur(
             y = df.loc[block, "imbalance"].to_numpy(float)
             segs = [((x[i], y[i]), (x[i + 1], y[i + 1])) for i in range(len(x) - 1)]
             ax.add_collection(LineCollection(segs, colors=color, linewidths=2.0, alpha=0.9))
+
     ax.set_ylabel(f"{metric_name} (%)")
     ax.set_title(f"Device {device_id} - {metric_name} {start} → {end}")
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d\n%H:%M"))
     ax.grid(True, which="both", linestyle=":", linewidth=0.5, alpha=0.6)
+
     ymin, ymax = ax.get_ylim()
     prev = 0.0
     for band in ["mild", "moderate", "severe"]:
@@ -253,12 +261,21 @@ def plot_colored_cur(
         ax.axhspan(prev, thr, color=SEVERITY_COLORS[band], alpha=0.08)
         prev = thr
     ax.set_ylim(ymin, max(ymax, prev * 1.2))
+
     handles = [Line2D([0], [0], color=c, lw=2) for c in PAIR_COLORS.values()]
     ax.legend(handles, PAIR_COLORS.keys(), title="Culprit pair", loc="upper right")
+
     fig.autofmt_xdate()
     fig.tight_layout()
-    fig.savefig(output_path, bbox_inches="tight")
-    plt.close(fig)
+
+    # --- NEW: only save+close when output_path is provided/non-empty ---
+    if output_path is not None and str(output_path).strip() != "":
+        fig.savefig(output_path, bbox_inches="tight")
+        plt.close(fig)
+        return None
+
+    # Otherwise, return the figure so the caller can display/use it
+    return fig
 
 
 def plot_event_stripes(

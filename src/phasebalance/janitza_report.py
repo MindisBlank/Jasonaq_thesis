@@ -677,26 +677,15 @@ def run(
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(
-        description="Generate Janitza metrics report: bar charts, correlation heatmap, and a Markdown summary."
-    )
+    p = argparse.ArgumentParser(description="Generate Janitza metrics report: bar charts, correlation heatmap, and a Markdown summary.")
     p.add_argument("--csv", default=DEFAULT_CSV, help="Path to the metrics CSV file")
     p.add_argument("--outdir", default=None, help="Output dir (default: results/report_<timestamp>/)")
     p.add_argument("--top-n", type=int, default=None, help="Show only the top-N devices per metric (bar charts).")
     p.add_argument("--zscore", action="store_true", help="Z-score normalize columns before correlation heatmap.")
     p.add_argument("--report-top-n", type=int, default=5, help="Top-N rows/devices shown in Markdown sections.")
-    p.add_argument(
-        "--no-plots",
-        action="store_true",
-        help="Skip all image plots and only generate the Markdown report.",
-    )
+    p.add_argument("--no-plots",action="store_true", help="Skip all image plots and only generate the Markdown report.",)
     # Simple thresholds override via repeated --th key=value
-    p.add_argument(
-        "--th",
-        action="append",
-        default=[],
-        help="Threshold override as key=value (repeatable). Example: --th cur_ratio=8 --th vuf_magnitude=0.03",
-    )
+    p.add_argument( "--th", action="append", default=[], help="Threshold override as key=value (repeatable). Example: --th cur_ratio=8 --th vuf_magnitude=0.03",)
     return p.parse_args()
 
 
