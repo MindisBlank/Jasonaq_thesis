@@ -200,7 +200,7 @@ def vuf_magnitude(Va: float, Vb: float, Vc: float) -> float:
         Voltage Unbalance Factor (unitless)
     """
     V_avg = (Va + Vb + Vc) / 3
-    vuf_value = (max(Va, Vb, Vc) - V_avg) / V_avg
+    vuf_value = ((max(Va, Vb, Vc) - V_avg) / V_avg)*100.0
     return vuf_value
 
 def vuf_symmetrical(V0: float, V1: float, V2: float) -> float:
