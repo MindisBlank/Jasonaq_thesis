@@ -72,8 +72,10 @@ def _vec_metric(fn, a, b, c):
 
 
 def label_culprit_pair(row: pd.Series) -> str:
-    hi, lo = row[["Ia", "Ib", "Ic"]].idxmax(), row[["Ia", "Ib", "Ic"]].idxmin()
-    return _CANON.get(str(hi).replace("a", "A") + str(lo).replace("a", "A"), "Ia-Ib")
+    hi = row[["Ia", "Ib", "Ic"]].idxmax()
+    lo = row[["Ia", "Ib", "Ic"]].idxmin()
+    return _CANON.get(f"{hi}{lo}", "Ia-Ib")
+
 
 
 def _contiguous_indices(mask: pd.Series) -> List[pd.Index]:
@@ -247,7 +249,7 @@ def plot_colored_cur(
             segs = [((x[i], y[i]), (x[i + 1], y[i + 1])) for i in range(len(x) - 1)]
             ax.add_collection(LineCollection(segs, colors=color, linewidths=2.0, alpha=0.9))
 
-    ax.set_ylabel(f"{metric_name} (%)")
+    ax.set_ylabel(f"{metric_name}")
     ax.set_title(f"Device {device_id} - {metric_name} {start} → {end}")
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d\n%H:%M"))
     ax.grid(True, which="both", linestyle=":", linewidth=0.5, alpha=0.6)
@@ -263,7 +265,7 @@ def plot_colored_cur(
     ax.set_ylim(ymin, max(ymax, prev * 1.2))
 
     handles = [Line2D([0], [0], color=c, lw=2) for c in PAIR_COLORS.values()]
-    ax.legend(handles, PAIR_COLORS.keys(), title="Culprit pair", loc="upper right")
+    ax.legend(handles, PAIR_COLORS.keys(), title="Largest disparity", loc="upper right")
 
     fig.autofmt_xdate()
     fig.tight_layout()
@@ -320,10 +322,10 @@ def plot_severity_duration_scatter(events: Sequence[EventRecord], device_id: int
             continue
         ax.scatter([ev.duration_h for ev in evs], [ev.peak for ev in evs], s=[max(ev.i_sum_peak, 0.0) * 5.0 for ev in evs], alpha=0.7, label=pair, color=color, edgecolors="k", linewidths=0.3)
     ax.set_xlabel("Duration (hours)")
-    ax.set_ylabel(f"Peak {metric_name} (%)")
+    ax.set_ylabel(f"Peak {metric_name}")
     ax.set_title(f"Severity vs Duration - Device {device_id}")
     ax.grid(True, linestyle=":", linewidth=0.5, alpha=0.6)
-    ax.legend(title="Culprit pair")
+    ax.legend(title="Largest disparity")
     fig.tight_layout(); fig.savefig(output_path, bbox_inches="tight"); plt.close(fig)
 
 
@@ -343,7 +345,7 @@ def plot_diurnal_heatmap(df: pd.DataFrame, device_id: int, metric_name: str, dpi
     ax.set_yticklabels(["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"])  # indices already 0..6
     ax.set_xlabel("Hour of day"); ax.set_ylabel("Weekday")
     ax.set_title(f"Diurnal imbalance heatmap - Device {device_id}")
-    cbar = plt.colorbar(im, ax=ax); cbar.set_label(f"Median {metric_name} (%)")
+    cbar = plt.colorbar(im, ax=ax); cbar.set_label(f"Median {metric_name}")
     fig.tight_layout(); fig.savefig(output_path, bbox_inches="tight"); plt.close(fig)
 
 
@@ -356,7 +358,7 @@ def plot_exceedance_and_taat(series: pd.Series, thresholds: Dict[str, float], me
     ax1.plot(vals, exc * 100.0, color="#4daf4a", linewidth=1.5)
     for band, thr in thresholds.items():
         ax1.axvline(thr, color=SEVERITY_COLORS.get(band, "#ccc"), linestyle="--", alpha=0.7)
-    ax1.set_xlabel(f"{metric_name} (%)"); ax1.set_ylabel("% time ≥ τ"); ax1.set_title("Exceedance curve"); ax1.grid(True, linestyle=":", linewidth=0.5, alpha=0.6)
+    ax1.set_xlabel(f"{metric_name}"); ax1.set_ylabel("% time ≥ τ"); ax1.set_title("Exceedance curve"); ax1.grid(True, linestyle=":", linewidth=0.5, alpha=0.6)
     taats = [metrics.get(f"{b}_taat_h", 0.0) or 0.0 for b in ("mild", "moderate", "severe")]
     bottom = 0.0
     for val, b, lbl in zip(taats, ("mild", "moderate", "severe"), ("Mild", "Moderate", "Severe")):

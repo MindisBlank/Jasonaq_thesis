@@ -1,0 +1,48 @@
+# Janitza Fetcher Configuration
+# List of device IDs to fetch (Integer list)
+# Corresponds to: --device-id
+device_ids:
+  - 232
+# The variable backend name to fetch (e.g., I_Effective, U_Effective)
+# Corresponds to: --variable
+variable_backend: "I_Effective"
+# Specific phases/channels to filter by.
+# If null, it fetches all available channels for the variable.
+# Corresponds to: --phases
+phases:
+  - "Input01"
+  - "Input02"
+  - "Input03"
+# -----------------------------------------------------------------------------
+# Time Settings
+# -----------------------------------------------------------------------------
+# Timebase resolution (e.g., 15m, 900, 1h)
+# Corresponds to: --timebase
+timebase: "15m"
+# Window start (Relative like '-7d' or Absolute '2025-01-01 00:00')
+# Corresponds to: --start
+start: "-7d"
+# Window end (Relative 'now' or Absolute '2025-01-02 00:00')
+# Corresponds to: --end
+end: "now"
+# -----------------------------------------------------------------------------
+# Processing & Output
+# -----------------------------------------------------------------------------
+# Which metric to use from the samples: avg, min, or max
+# Corresponds to: --which
+which: "avg"
+# Path to the capabilities CSV file
+# Corresponds to: --capabilities-csv
+capabilities_csv: "metadata/capabilities.csv"
+# Optional: Path to save the resulting DataFrame as Parquet
+# Corresponds to: --parquet
+parquet_output: "data/output.parquet"
+# Set to true to skip plotting the graph
+# Corresponds to: --no-plot
+no_plot: false
+# -----------------------------------------------------------------------------
+# Authentication
+# -----------------------------------------------------------------------------
+# Bearer token for GridVis (Optional)
+# Corresponds to: --auth-token
+auth_token: null

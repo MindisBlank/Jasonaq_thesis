@@ -111,3 +111,7 @@ the scraper live in `results/` and that the `phasebalance` package is importable
 
 For questions or collaboration opportunities please open an issue or reach out directly.
 
+```mermaid
+graph LR
+    fa:fa-check-->fa:fa-coffee
+```
