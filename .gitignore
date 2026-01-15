@@ -9,6 +9,9 @@ __pycache__/
 # data files
 /data/
 
+# results files
+/results/
+
 # Logs and reports
 *.log
 results/report*
