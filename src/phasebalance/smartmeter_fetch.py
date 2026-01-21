@@ -17,22 +17,14 @@ PHASES = [
     "LPQ_Current_L3_AVG",
 ]
 
-POWER_PHASES = ["AMP_Power_L1_AVG_T0","AMP_Power_L2_AVG_T0","AMP_Power_L3_AVG_T0",] # time resolution is 10 min here
 TIME_RES = "15 minutes"  # aggregation resolution
 
-POWER_PHS = ["AMP_Power_L1_AVG_T0","AMP_Power_L2_AVG_T0","AMP_Power_L3_AVG_T0"]
+POWER_PHS = ["AMP_Power_L1_AVG_T0","AMP_Power_L2_AVG_T0","AMP_Power_L3_AVG_T0"] # 10 min averages
 E_Q_PLUS  = "LP1_ReactiveEnergyPlus_CUM_T0"
 E_Q_MINUS = "LP1_ReactiveEnergyMinus_CUM_T0"
 E_P_PLUS  = "LP1_ActiveEnergyPlus_CUM_T0"
 E_P_MINUS = "LP1_ActiveEnergyMinus_CUM_T0"
 V_PHS     = ["LPQ_Voltage_L1_AVG","LPQ_Voltage_L2_AVG","LPQ_Voltage_L3_AVG"]
-
-
-Voltage_PHASES = [
-    "LPQ_Voltage_L1_AVG",
-    "LPQ_Voltage_L2_AVG",
-    "LPQ_Voltage_L3_AVG",
-]
 
 def load_substation_transformers_from_parquet(parquet_path: str | Path) -> list[tuple[int, str]]:
     """
@@ -84,122 +76,6 @@ def load_substation_transformers_from_parquet(parquet_path: str | Path) -> list[
     print("First few:", pairs[:10])
     return pairs
 
-def fetch_and_save_smartmeter_voltage(
-    substation_ids,
-    start_date: str,
-    end_date: str,
-    output_path: str,
-    time_res: str = TIME_RES,
-    substation_transformers: list[tuple[int, str]] | None = None,  # 👈 NEW
-):
-    """
-    Fetch smartmeter voltages for given substations and time window, aggregate to
-    `time_res`, and save to a local file.
-
-    Output columns:
-      substation_id, transformer, ts, V_a, V_b, V_c, per_completed
-
-    NOTE:
-      This expects your _build_meteringpoint_frames(...) to return mp_completed/mp_status
-      that include a 'transformer' column derived from metering_points.dspennir (1->sp1, 2->sp2).
-    """
-    spark = get_spark()
-
-    # Re-use mapping + per_completed from your existing helper (now transformer-aware)
-    mp_completed, mp_status = _build_meteringpoint_frames(spark, substation_ids,substation_transformers=substation_transformers,)
-
-    sm_ts = spark.read.table("veiturdata_base_prd.ami.smartmeter")
-
-    # 1) Join smartmeter with Completed metering points
-    joined = (
-        sm_ts.withColumn("meteringpointid", F.col("meteringpointid").cast("string"))
-        .join(mp_completed, F.col("meteringpointid") == F.col("mp_id"), "inner")
-        .filter(
-            (F.col("timestamp") >= F.lit(start_date))
-            & (F.col("timestamp") <= F.lit(end_date))
-            & (F.col("validity") == F.lit("Valid"))
-            & (F.col("resulttype").isin(*Voltage_PHASES))
-        )
-        .select(
-            F.to_timestamp("timestamp").alias("ts"),
-            "resulttype",
-            F.col("value").cast("double").alias("value_V"),
-            "meteringpointid",
-            "substation_id",
-            "transformer",  # 👈 NEW
-        )
-    )
-
-    # 2) Deduplicate per (substation, transformer, meter, phase, ts)
-    w = Window.partitionBy(
-        "substation_id", "transformer", "meteringpointid", "resulttype", "ts"
-    ).orderBy(F.col("ts"))
-
-    joined_dedup = (
-        joined.withColumn("rn", F.row_number().over(w))
-        .filter(F.col("rn") == 1)
-        .drop("rn")
-    )
-
-    # 3) Aggregate voltages to time_res using average per (substation, transformer) & phase
-    v_per_phase_res = (
-        joined_dedup
-        .withColumn("ts_res", F.window("ts", time_res).start)
-        .groupBy("substation_id", "transformer", "ts_res", "resulttype")
-        .agg(F.avg("value_V").alias("V_res"))
-    )
-
-    # 4) Pivot phases → V_a / V_b / V_c
-    v_pivot = (
-        v_per_phase_res.groupBy("substation_id", "transformer", "ts_res")
-        .pivot("resulttype", Voltage_PHASES)
-        .agg(F.first("V_res"))
-        .withColumnRenamed("ts_res", "ts")
-        .orderBy("substation_id", "transformer", "ts")
-    )
-
-    result = (
-        v_pivot
-        .withColumnRenamed(Voltage_PHASES[0], "V_a")
-        .withColumnRenamed(Voltage_PHASES[1], "V_b")
-        .withColumnRenamed(Voltage_PHASES[2], "V_c")
-    )
-
-    # 5) Attach per_completed per (substation, transformer)
-    result = result.join(
-        mp_status.select("substation_id", "transformer", "per_completed"),
-        on=["substation_id", "transformer"],
-        how="left",
-    )
-
-    # 6) Final column order
-    result = (
-        result.select(
-            "substation_id",
-            "transformer",
-            "ts",
-            "V_a",
-            "V_b",
-            "V_c",
-            "per_completed",
-        )
-        .orderBy("substation_id", "transformer", "ts")
-    )
-
-    # 7) Save to disk
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    pdf = result.toPandas()
-    pdf.attrs.clear()
-
-    if output_path.suffix.lower() == ".parquet":
-        pdf.to_parquet(output_path, index=False)
-    else:
-        pdf.to_csv(output_path, index=False)
-
-    print(f"Saved {len(pdf)} rows to {output_path}")
-    return pdf
-
 def _parse_substation_name(dnr_str: str) -> int | None:
     """
     Convert strings like 'D1070', 'D0411' to integer substation IDs 1070, 411.
@@ -229,85 +105,12 @@ def _parse_substation_name(dnr_str: str) -> int | None:
     except ValueError:
         return None
 
-def load_substations_from_devices(devices_csv_path: str | Path) -> list[int]:
-    """
-    Read devices.csv and return a sorted list of distinct substation ids
-    inferred from the 'name' column (e.g. 'D0411' -> 411).
-    """
-    devices_csv_path = Path(devices_csv_path)
-    df = pd.read_csv(devices_csv_path)
-
-    if "dnr_str" not in df.columns:
-        raise ValueError(
-            f"'dnr_str' column not found in {devices_csv_path}. "
-            f"Available columns: {list(df.columns)}"
-        )
-
-    df["substation_id"] = df["dnr_str"].map(_parse_substation_name)
-
-    # Drop rows that couldn't be parsed to a valid int
-    subs = (
-        df["substation_id"]
-        .dropna()
-        .astype(int)
-        .drop_duplicates()
-        .sort_values()
-        .tolist()
-    )
-
-    return subs
-
 def get_spark():
     """
     Create a Databricks-connected Spark session.
     Relies on Databricks Connect config set up by the VS Code extension.
     """
     return DatabricksSession.builder.getOrCreate()
-
-def load_substations_from_parquet(parquet_path: str | Path) -> list[int]:
-    """
-    Read a parquet file and return a sorted list of distinct substation ids
-    inferred from the 'dnr_str' column (e.g. 'D0411' -> 411).
-
-    Also prints how many unique dnr_str are present (useful sanity check).
-    """
-    parquet_path = Path(parquet_path)
-
-    # Read only the dnr_str column if possible (faster on big files)
-    try:
-        df = pd.read_parquet(parquet_path, columns=["dnr_str"])
-    except Exception:
-        df = pd.read_parquet(parquet_path)
-
-    if "dnr_str" not in df.columns:
-        raise ValueError(
-            f"'dnr_str' column not found in {parquet_path}. "
-            f"Available columns: {list(df.columns)}"
-        )
-
-    dnr_clean = (
-        df["dnr_str"]
-        .dropna()
-        .astype(str)
-        .str.strip()
-    )
-
-    unique_dnr = sorted(dnr_clean.drop_duplicates().tolist())
-    print(f"Found {len(unique_dnr)} unique dnr_str in parquet: {parquet_path}")
-    print("First few dnr_str:", unique_dnr[:10])
-
-    # Convert Dxxxx -> int substation_id using your existing parser
-    substation_ids = (
-        pd.Series(unique_dnr)
-        .map(_parse_substation_name)
-        .dropna()
-        .astype(int)
-        .drop_duplicates()
-        .sort_values()
-        .tolist()
-    )
-
-    return substation_ids
 
 def _build_meteringpoint_frames(spark, substation_ids, substation_transformers: list[tuple[int, str]] | None = None):
     """
@@ -740,206 +543,6 @@ def fetch_and_save_smartmeter(
     print(f"Saved {len(pdf)} rows to {output_path}")
     return pdf
 
-def fetch_and_save_smartmeter_all_meters_one_parquet(
-    *,
-    substation_ids: list[int],
-    start_date: str,
-    end_date: str,
-    output_path: str,
-    time_res: str = TIME_RES,
-    substation_transformers: list[tuple[int, str]] | None = None,
-):
-    spark_df = fetch_smartmeter_all_profiles_per_meter_spark(
-        substation_ids=substation_ids,
-        start_date=start_date,
-        end_date=end_date,
-        time_res=time_res,
-        substation_transformers=substation_transformers,
-    )
-
-    pdf = spark_df.toPandas()
-    pdf.attrs.clear()
-
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    pdf.to_parquet(output_path, index=False)
-    print(f"✅ Wrote ONE parquet with {len(pdf)} rows to {output_path}")
-    return pdf
-
-def fetch_smartmeter_all_profiles_per_meter_spark(
-    *,
-    substation_ids: list[int],
-    start_date: str,
-    end_date: str,
-    time_res: str = TIME_RES,
-    current_phases: Sequence[str] = PHASES,
-    voltage_phases: Sequence[str] = Voltage_PHASES,
-    power_phases: Sequence[str] = POWER_PHASES,
-    substation_transformers: list[tuple[int, str]] | None = None,
-):
-    """
-    Returns a Spark DataFrame with ONE row per (meteringpointid, ts_res)
-    containing:
-      - I_a,I_b,I_c (+ I_total)
-      - V_a,V_b,V_c
-      - P_a,P_b,P_c (+ P_total)
-      - mp metadata: tegund, husveita_fastanumer, kennitalamaelistadar
-      - substation/transformer
-      - per_completed + n_completed + n_total_mps (per substation/transformer)
-
-    This DOES NOT sum across meters. It keeps each meter separate.
-    """
-    spark = get_spark()
-
-    mp_completed, mp_status = _build_meteringpoint_frames(
-        spark, substation_ids, substation_transformers=substation_transformers
-    )
-
-    sm_ts = spark.read.table("veiturdata_base_prd.ami.smartmeter")
-
-    wanted_resulttypes = list(current_phases) + list(voltage_phases) + list(power_phases)
-
-    joined = (
-        sm_ts.withColumn("meteringpointid", F.col("meteringpointid").cast("string"))
-        .join(mp_completed, F.col("meteringpointid") == F.col("mp_id"), "inner")
-        .filter(
-            (F.col("timestamp") >= F.lit(start_date))
-            & (F.col("timestamp") <= F.lit(end_date))
-            & (F.col("validity") == F.lit("Valid"))
-            & (F.col("resulttype").isin(*wanted_resulttypes))
-        )
-        .select(
-            F.to_timestamp("timestamp").alias("ts"),
-            "resulttype",
-            F.col("value").cast("double").alias("val"),
-            F.col("meteringpointid").alias("meteringpointid"),
-            "substation_id",
-            "transformer",
-            # metadata (from metering_points via mp_completed)
-            "tegund",
-            "husveita_fastanumer",
-            "kennitalamaelistadar",
-        )
-    )
-
-    # Deduplicate per (substation, transformer, meter, resulttype, ts)
-    w = Window.partitionBy(
-        "substation_id", "transformer", "meteringpointid", "resulttype", "ts"
-    ).orderBy(F.col("ts"))
-
-    joined_dedup = (
-        joined.withColumn("rn", F.row_number().over(w))
-        .filter(F.col("rn") == 1)
-        .drop("rn")
-    )
-
-    # Resample to time_res per meter + resulttype
-    res = (
-        joined_dedup
-        .withColumn("ts_res", F.window("ts", time_res).start)
-        .groupBy(
-            "substation_id", "transformer", "meteringpointid",
-            "tegund", "husveita_fastanumer", "kennitalamaelistadar",
-            "ts_res", "resulttype"
-        )
-        .agg(F.avg("val").alias("val_res"))
-    )
-
-    # Pivot ALL resulttypes to wide columns
-    wide = (
-        res.groupBy(
-            "substation_id", "transformer", "meteringpointid",
-            "tegund", "husveita_fastanumer", "kennitalamaelistadar",
-            "ts_res"
-        )
-        .pivot("resulttype", wanted_resulttypes)
-        .agg(F.first("val_res"))
-        .withColumnRenamed("ts_res", "ts")
-    )
-
-    # Rename to nice canonical columns (currents)
-    wide = (
-        wide
-        .withColumnRenamed(current_phases[0], "I_a")
-        .withColumnRenamed(current_phases[1], "I_b")
-        .withColumnRenamed(current_phases[2], "I_c")
-        .withColumnRenamed(voltage_phases[0], "V_a")
-        .withColumnRenamed(voltage_phases[1], "V_b")
-        .withColumnRenamed(voltage_phases[2], "V_c")
-        .withColumnRenamed(power_phases[0], "P_a")
-        .withColumnRenamed(power_phases[1], "P_b")
-        .withColumnRenamed(power_phases[2], "P_c")
-    )
-
-    # Totals (per meter)
-    wide = wide.withColumn(
-        "I_total",
-        F.coalesce(F.col("I_a"), F.lit(0.0)) +
-        F.coalesce(F.col("I_b"), F.lit(0.0)) +
-        F.coalesce(F.col("I_c"), F.lit(0.0))
-    )
-
-    wide = wide.withColumn(
-        "P_total",
-        F.coalesce(F.col("P_a"), F.lit(0.0)) +
-        F.coalesce(F.col("P_b"), F.lit(0.0)) +
-        F.coalesce(F.col("P_c"), F.lit(0.0))
-    )
-
-    # Attach per_completed + counts per (substation, transformer)
-    wide = wide.join(
-        mp_status.select("substation_id", "transformer", "per_completed", "n_completed", "n_total_mps"),
-        on=["substation_id", "transformer"],
-        how="left",
-    )
-
-    return wide.orderBy("substation_id", "transformer", "meteringpointid", "ts")
-
-def fetch_and_save_smartmeter_per_meter_parquets(
-    *,
-    substation_ids: list[int],
-    start_date: str,
-    end_date: str,
-    output_dir: str,
-    time_res: str = TIME_RES,
-    substation_transformers: list[tuple[int, str]] | None = None,
-):
-    """
-    ONE Spark job -> ONE Pandas DF -> write one local parquet per meter.
-    Much faster than running a Spark job per meter.
-    """
-    spark_df = fetch_smartmeter_all_profiles_per_meter_spark(
-        substation_ids=substation_ids,
-        start_date=start_date,
-        end_date=end_date,
-        time_res=time_res,
-        substation_transformers=substation_transformers,
-    )
-
-    # Single action: compute everything once
-    pdf_all = spark_df.toPandas()
-    pdf_all.attrs.clear()
-
-    out_base = Path(output_dir)
-    out_base.mkdir(parents=True, exist_ok=True)
-
-    n_written = 0
-    # Split locally (fast)
-    for (sid, tr, mpid), g in pdf_all.groupby(["substation_id", "transformer", "meteringpointid"], sort=False):
-        sid = int(sid)
-        tr = str(tr)
-        mpid = str(mpid)
-
-        out_path = out_base / f"D{sid:04d}" / tr
-        out_path.mkdir(parents=True, exist_ok=True)
-
-        fpath = out_path / f"mp_{mpid}.parquet"
-        g.sort_values("ts").to_parquet(fpath, index=False)
-        n_written += 1
-
-    print(f"✅ Wrote {n_written} per-meter parquet files under: {out_base}")
-    return n_written
-
 def filter_pairs_for_feeder(
     pairs: list[tuple[int, str]],
     substation_id: int,
@@ -962,36 +565,6 @@ def filter_pairs_for_feeder(
             f"Available transformers for {substation_id}: {avail}"
         )
     return filtered
-
-def export_single_feeder_per_meter(
-    *,
-    janitza_pairs: list[tuple[int, str]],
-    substation_id: int,
-    transformer: str,
-    start_date: str,
-    end_date: str,
-    output_dir: str,
-    time_res: str = "15 minutes",
-    max_meters: int | None = None,
-):
-    """
-    Convenience wrapper:
-      - filters janitza_pairs down to a single (substation, transformer)
-      - runs per-meter export (one parquet per meter)
-    """
-    feeder_pairs = filter_pairs_for_feeder(janitza_pairs, substation_id, transformer)
-
-    fetch_and_save_smartmeter_per_meter_parquets(
-        substation_ids=[int(substation_id)],
-        start_date=start_date,
-        end_date=end_date,
-        output_dir=output_dir,
-        time_res=time_res,
-        substation_transformers=feeder_pairs,  # <-- same filtering logic in _build_meteringpoint_frames
-    )
-
-
-#new #
 
 def _parse_minutes(time_res: str) -> int:
     """
