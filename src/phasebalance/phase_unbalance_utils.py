@@ -153,8 +153,130 @@ def resolve_channels(
 
     return out
 
+def parse_dnr(d):
+    """
+    Convert DNR-style IDs to integers.
 
+    Examples:
+        'D0411' -> 411
+        'D1354' -> 1354
+    """
+    s = str(d).strip()
+    if not s or not s.startswith("D"):
+        return None
 
+    digits = s[1:].lstrip("0")  # remove 'D' and leading zeros
+    if not digits:
+        return None
+
+    return int(digits)
+
+def make_expected_grid(df, freq=pd.Timedelta(minutes=15)):
+    """Build full expected 15-min grid per (substation_id, transformer) over its observed span."""
+    frames = []
+    grouped = df.groupby(["substation_id", "transformer"], sort=False)
+
+    for (substation_id, transformer), group in grouped:
+        t0 = group["ts"].min()
+        t1 = group["ts"].max()
+        grid = pd.date_range(t0, t1, freq=freq)
+
+        frames.append(
+            pd.DataFrame(
+                {
+                    "substation_id": substation_id,
+                    "transformer": transformer,
+                    "ts": grid,
+                }
+            )
+        )
+
+    return pd.concat(frames, ignore_index=True)
+
+def filter_devices_by_name_pattern(
+    df_jn: pd.DataFrame,
+    df_devices: pd.DataFrame,
+    *,
+    name_col: str = "name",
+    device_id_col: str = "device_id",
+    pattern: str = (
+        r"Measurement Group 2|Measurement Group 3|Mod 1|Mod1|Mod2|Mod3|Mod\. 1|Mod\. 2|LR|241|"
+        r"Device-4|Device-233|Device-162"
+    ),
+) -> tuple[pd.DataFrame, pd.Series]:
+    """
+    Remove rows from df_jn whose device_id matches devices in df_devices whose `name_col`
+    matches `pattern`.
+
+    Returns:
+        (df_jn_filtered, devices_to_remove) where devices_to_remove is Int64 dtype.
+    """
+    devices_to_remove = pd.to_numeric(
+        df_devices.loc[
+            df_devices[name_col].astype(str).str.contains(pattern, na=False, regex=True),
+            device_id_col,
+        ],
+        errors="coerce",
+    ).dropna().astype("Int64")
+
+    out = df_jn.copy()
+    out[device_id_col] = pd.to_numeric(out[device_id_col], errors="coerce").astype("Int64")
+
+    out = out[~out[device_id_col].isin(set(devices_to_remove.tolist()))].copy()
+    return out, devices_to_remove
+
+def filter_low_load_samples(
+    df: pd.DataFrame,
+    *,
+    x_mean_phase_A: float = 50.0,     # keep sample if mean(Ia,Ib,Ic) >= this
+    use_isum: bool = False,           # if True: use I_sum threshold instead
+    isum_min_A: float = 150.0,        # keep sample if (Ia+Ib+Ic) >= this
+    min_valid_points_per_device: int = 0,  # e.g. 2000 to drop dead devices entirely (optional)
+) -> pd.DataFrame:
+    """
+    filter *samples* (rows), not devices.
+    Keeps only timestamps where the feeder load is meaningful.
+
+    Requirements for a row to be kept:
+      - Ia_avg, Ib_avg, Ic_avg must be numeric
+      - load condition passes:
+          * mean_phase >= x_mean_phase_A
+        OR (if use_isum=True)
+          * I_sum >= isum_min_A
+
+    Optional:
+      - drop devices that have too few remaining valid points (useful if some meters were offline).
+    """
+    out = df.copy()
+
+    # Ensure numeric device_id + currents
+    out["device_id"] = pd.to_numeric(out["device_id"], errors="coerce").astype("Int64")
+    Ia = pd.to_numeric(out["Ia_avg"], errors="coerce")
+    Ib = pd.to_numeric(out["Ib_avg"], errors="coerce")
+    Ic = pd.to_numeric(out["Ic_avg"], errors="coerce")
+
+    # Compute load measures per row
+    mean_phase = (Ia + Ib + Ic) / 3.0
+    isum = Ia + Ib + Ic
+
+    # Keep rows with valid current measurements
+    valid_curr = mean_phase.notna()
+
+    # Apply load threshold
+    if use_isum:
+        keep = valid_curr & (isum >= float(isum_min_A))
+    else:
+        keep = valid_curr & (mean_phase >= float(x_mean_phase_A))
+
+    out = out.loc[keep].copy()
+
+    # Optional: drop devices with too few surviving points
+    if min_valid_points_per_device and min_valid_points_per_device > 0:
+        counts = out.groupby("device_id").size()
+        good_devices = counts[counts >= int(min_valid_points_per_device)].index
+        out = out[out["device_id"].isin(good_devices)].copy()
+
+    return out
 # ---------- NaN constants ----------
 NAN = float("nan")
 CNAN = complex(float("nan"), float("nan"))

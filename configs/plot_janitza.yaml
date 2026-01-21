@@ -2,7 +2,7 @@
 # List of device IDs to fetch (Integer list)
 # Corresponds to: --device-id
 device_ids:
-  - 232
+  - 386
 # The variable backend name to fetch (e.g., I_Effective, U_Effective)
 # Corresponds to: --variable
 variable_backend: "I_Effective"
@@ -10,9 +10,9 @@ variable_backend: "I_Effective"
 # If null, it fetches all available channels for the variable.
 # Corresponds to: --phases
 phases:
-  - "Input01"
-  - "Input02"
-  - "Input03"
+  - "L1"
+  - "L2"
+  - "L3"
 # -----------------------------------------------------------------------------
 # Time Settings
 # -----------------------------------------------------------------------------
@@ -21,10 +21,10 @@ phases:
 timebase: "15m"
 # Window start (Relative like '-7d' or Absolute '2025-01-01 00:00')
 # Corresponds to: --start
-start: "-7d"
+start: "-79d"
 # Window end (Relative 'now' or Absolute '2025-01-02 00:00')
 # Corresponds to: --end
-end: "now"
+end: "-75d"
 # -----------------------------------------------------------------------------
 # Processing & Output
 # -----------------------------------------------------------------------------
