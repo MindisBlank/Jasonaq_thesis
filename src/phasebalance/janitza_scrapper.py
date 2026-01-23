@@ -10,17 +10,37 @@ import phase_unbalance_utils as m
 
 
 def _safe_fetch(device_id, variable_backend, phase_backend, timebase, start, end):
-    """Fetch and return None if response is missing/empty."""
-    js = fetch_hist_json(
-        device_id=device_id,
-        variable_backend=variable_backend,
-        phase_backend=phase_backend,
-        timebase=timebase,
-        start=start,
-        end=end,
-    )
-    return js if m._has_values(js) else None
+    """
+    Fetch and return None if response is missing/empty.
+    If variable_backend is a list/tuple, try in order until one returns values.
+    """
+    backends = variable_backend if isinstance(variable_backend, (list, tuple)) else [variable_backend]
 
+    for vb in backends:
+        js = fetch_hist_json(
+            device_id=device_id,
+            variable_backend=vb,
+            phase_backend=phase_backend,
+            timebase=timebase,
+            start=start,
+            end=end,
+        )
+        if m._has_values(js):
+            return js
+
+    return None
+
+def _extract_avg_df(json_obj, base_name: str) -> pd.DataFrame:
+    """
+    Build a DataFrame with one column: {base}_avg indexed by timestamp (startTime).
+    """
+    col = f"{base_name}_avg"
+    if json_obj is None or not m._has_values(json_obj):
+        return pd.DataFrame(columns=[col])
+
+    s_avg = m._series_from_values(json_obj, "avg")
+    s_avg.name = col
+    return s_avg.to_frame()
 
 def _extract_triplet_df(json_obj, base_name: str) -> pd.DataFrame:
     """
@@ -40,7 +60,6 @@ def _extract_triplet_df(json_obj, base_name: str) -> pd.DataFrame:
     s_max.name = f"{base_name}_max"
 
     return pd.concat([s_avg, s_min, s_max], axis=1)
-
 
 def compute_metrics_from_json_on_the_fly(
     json_in01=None, json_in02=None, json_in03=None,
@@ -94,14 +113,62 @@ def compute_metrics_from_json_on_the_fly(
 
     return pd.DataFrame(out_rows).set_index("ts").sort_index()
 
+def _fetch_3phase_df(
+    did: str,
+    plan: dict,
+    keys: tuple[str, str, str],          # ("PA","PB","PC") etc
+    base_names: tuple[str, str, str],    # ("Pa","Pb","Pc") etc
+    variable_backend,
+    timebase: str,
+    start: str,
+    end: str,
+    extractor,                           # _extract_triplet_df or _extract_avg_df
+) -> list[pd.DataFrame]:
+    """
+    Always returns a list of 3 DataFrames (may be empty) for A/B/C.
+    If the plan is missing a key, its df is empty.
+    """
+    out = []
+    for k, bn in zip(keys, base_names):
+        if plan and k in plan:
+            js = _safe_fetch(did, variable_backend, plan[k]["type_backend"], timebase, start, end)
+        else:
+            js = None
+        out.append(extractor(js, bn))
+    return out
+
+def _fetch_total_df(
+    did: str,
+    plan: dict,
+    key: str,
+    base_name: str,
+    variable_backend,
+    timebase: str,
+    start: str,
+    end: str,
+    extractor,
+) -> pd.DataFrame:
+    if plan and key in plan:
+        js = _safe_fetch(
+            did,
+            variable_backend,                 
+            plan[key]["type_backend"],
+            timebase,
+            start,
+            end,
+        )
+        return extractor(js, base_name)
+    return extractor(None, base_name)
+
+
 
 def main():
     # --- config ---
-    OUT_DIR = "results"
+    OUT_DIR = "data"
     os.makedirs(OUT_DIR, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M")
-    out_path = os.path.join(OUT_DIR, f"janitza_timeseries_{timestamp}.parquet")
+    out_path = os.path.join(OUT_DIR, f"janitza_timeseries_{timestamp}_All_mes.parquet")
 
     devices = pd.read_csv("metadata/devices.csv")
     caps = pd.read_csv("metadata/capabilities.csv")
@@ -125,19 +192,42 @@ def main():
 
     # Channel specs (NO sequences)
     CHANNEL_SPEC_I = {
-        "IA": {"value_backend": "I_Effective", "type_candidates": ["Input01", "Input05", "L1"]},
-        "IB": {"value_backend": "I_Effective", "type_candidates": ["Input02", "Input06", "L2"]},
-        "IC": {"value_backend": "I_Effective", "type_candidates": ["Input03", "Input07", "L3"]},
+        "IA": {"value_backend": "I_Effective", "type_candidates": ["Input01", "L1"]},
+        "IB": {"value_backend": "I_Effective", "type_candidates": ["Input02", "L2"]},
+        "IC": {"value_backend": "I_Effective", "type_candidates": ["Input03", "L3"]},
     }
 
     CHANNEL_SPEC_V = {
-        "VA": {"value_backend": "U_Effective", "type_candidates": ["Input01", "Input05", "L1"]},
-        "VB": {"value_backend": "U_Effective", "type_candidates": ["Input02", "Input06", "L2"]},
-        "VC": {"value_backend": "U_Effective", "type_candidates": ["Input03", "Input07", "L3"]},
+        "VA": {"value_backend": "U_Effective", "type_candidates": ["Input01", "L1"]},
+        "VB": {"value_backend": "U_Effective", "type_candidates": ["Input02", "L2"]},
+        "VC": {"value_backend": "U_Effective", "type_candidates": ["Input03", "L3"]},
     }
 
-    # optional neutral/4th channel (if present)
-    CHANNEL_SPEC_I4 = {"IA": {"value_backend": "I_Effective", "type_candidates": ["Input04", "Input08", "L4"]}}
+    CHANNEL_SPEC_P = {
+        "PA": {"value_backend": "PowerActive", "type_candidates": ["Input01", "L1"]},
+        "PB": {"value_backend": "PowerActive", "type_candidates": ["Input02", "L2"]},
+        "PC": {"value_backend": "PowerActive", "type_candidates": ["Input03", "L3"]},
+    }
+
+    CHANNEL_SPEC_S = {
+        "SA": {"value_backend": "PowerApparent", "type_candidates": ["Input01", "L1"]},
+        "SB": {"value_backend": "PowerApparent", "type_candidates": ["Input02", "L2"]},
+        "SC": {"value_backend": "PowerApparent", "type_candidates": ["Input03", "L3"]},
+    }
+
+    CHANNEL_SPEC_Q = {
+        "QA": {"value_backend": "PowerReactivefund", "type_candidates": ["Input01", "L1"]},
+        "QB": {"value_backend": "PowerReactivefund", "type_candidates": ["Input02", "L2"]},
+        "QC": {"value_backend": "PowerReactivefund", "type_candidates": ["Input03", "L3"]},
+    }
+
+    CHANNEL_SPEC_P_TOTAL = {
+        "P_TOTAL": {"value_backend": "ActiveEnergy", "type_candidates": ["SUM13"]}, #3600 sample time Seems like the 801 meters are a hasle again they sample at 60 and 900 not always the same need to make sure my fallback code works for this 
+    }
+
+    CHANNEL_SPEC_Q_TOTAL = {
+        "Q_TOTAL": {"value_backend": ["ReactiveEnergy","ReactiveEnergyInd"], "type_candidates": ["SUM13"]}, # Ditto above.
+    }
 
     # Filter for devices that have all three resolved channels
     matches = []
@@ -163,8 +253,58 @@ def main():
             f"I: A={pa},B={pb},C={pc} | V: A={pva},B={pvb},C={pvc}"
         )
 
-        # optional I4
-        planI4 = m.resolve_channels(caps, device_id=did, channels=CHANNEL_SPEC_I4, require_all=False)
+        # optional measurements to fetch if available
+        plan_P = m.resolve_channels(caps, device_id=did, channels=CHANNEL_SPEC_P, require_all=False)
+        plan_S = m.resolve_channels(caps, device_id=did, channels=CHANNEL_SPEC_S, require_all=False)
+        plan_Q = m.resolve_channels(caps, device_id=did, channels=CHANNEL_SPEC_Q, require_all=False)
+        plan_P_total = m.resolve_channels(caps, device_id=did, channels=CHANNEL_SPEC_P_TOTAL, require_all=False)
+        plan_Q_total = m.resolve_channels(caps, device_id=did, channels=CHANNEL_SPEC_Q_TOTAL, require_all=False)
+
+        optional_dfs = []
+
+        # 3-phase POWER (triplets)
+        optional_dfs += _fetch_3phase_df(
+            did, plan_P,
+            keys=("PA","PB","PC"),
+            base_names=("Pa","Pb","Pc"),
+            variable_backend="PowerActive",
+            timebase=sample_time,
+            start=start, end=end,
+            extractor=_extract_triplet_df
+        )
+
+        optional_dfs += _fetch_3phase_df(
+            did, plan_S,
+            keys=("SA","SB","SC"),
+            base_names=("Sa","Sb","Sc"),
+            variable_backend="PowerApparent",
+            timebase=sample_time,
+            start=start, end=end,
+            extractor=_extract_triplet_df
+        )
+
+        optional_dfs += _fetch_3phase_df(
+            did, plan_Q,
+            keys=("QA","QB","QC"),
+            base_names=("Qa","Qb","Qc"),
+            variable_backend="PowerReactivefund",
+            timebase=sample_time,
+            start=start, end=end,
+            extractor=_extract_triplet_df
+        )
+
+        # TOTAL ENERGY (avg-only) — only if you still want it; otherwise remove these two lines entirely
+        optional_dfs.append(
+            _fetch_total_df(did, plan_P_total, "P_TOTAL", "P_total",
+                            variable_backend="ActiveEnergy", timebase="1 hour",
+                            start=start, end=end, extractor=_extract_avg_df)
+        )
+        optional_dfs.append(
+            _fetch_total_df(did, plan_Q_total, "Q_TOTAL", "Q_total",
+                            variable_backend=["ReactiveEnergy","ReactiveEnergyInd"], timebase="1 hour",
+                            start=start, end=end, extractor=_extract_avg_df)
+        )
+
 
         # Fetch required I,V
         data_Ia = _safe_fetch(did, planI["IA"]["value_backend"], pa, sample_time, start, end)
@@ -182,13 +322,10 @@ def main():
 
         nI = len(data_Ia.get("values", []))
         nV = len(data_Va.get("values", []))
-        if nI <= 10 or nV <= 10:
+        if nI <= 100 or nV <= 100:
             print(f"⚠️ Skipping {did} ({name}) — insufficient data points (I: {nI}, V: {nV}).")
             continue
-
-        data_I4 = None
-        if planI4 and "IA" in planI4:
-            data_I4 = _safe_fetch(did, "I_Effective", planI4["IA"]["type_backend"], sample_time, start, end)
+        
 
         # measurements avg/min/max per timestamp
         df_meas = pd.concat(
@@ -199,14 +336,10 @@ def main():
                 _extract_triplet_df(data_Va, "Va"),
                 _extract_triplet_df(data_Vb, "Vb"),
                 _extract_triplet_df(data_Vc, "Vc"),
+                *optional_dfs,
             ],
             axis=1,
-        )
-
-        if data_I4 is not None:
-            df_meas = pd.concat([df_meas, _extract_triplet_df(data_I4, "I4")], axis=1)
-
-        df_meas = df_meas.sort_index()
+        ).sort_index()
 
         # metrics per timestamp
         df_metrics = compute_metrics_from_json_on_the_fly(
@@ -215,6 +348,8 @@ def main():
         )
 
         df_full = pd.concat([df_meas, df_metrics], axis=1).sort_index()
+
+
 
         # attach metadata
         df_full["device_id"] = did
@@ -230,8 +365,6 @@ def main():
         df_full["Va_label"] = pva
         df_full["Vb_label"] = pvb
         df_full["Vc_label"] = pvc
-        if data_I4 is not None and planI4 and "IA" in planI4:
-            df_full["I4_label"] = planI4["IA"]["type_backend"]
 
         df_full = df_full.reset_index(names="ts")
         all_dfs.append(df_full)
@@ -249,10 +382,14 @@ def main():
     front_cols = [
         "device_id", "name", "device_type_name", "ts",
         "window_start", "window_end", "sample_time",
-        "Ia_label", "Ib_label", "Ic_label", "Va_label", "Vb_label", "Vc_label",
-        "I4_label",
     ]
-    front_cols = [c for c in front_cols if c in df_out.columns]
+
+    # Put ALL label columns next (Ia_label, Pa_label, etc.) without hardcoding them
+    label_cols = sorted([c for c in df_out.columns if c.endswith("_label")])
+
+    front_cols = [c for c in front_cols if c in df_out.columns] + label_cols
+    front_cols = list(dict.fromkeys(front_cols))  # dedupe, preserve order
+
     other_cols = [c for c in df_out.columns if c not in front_cols]
     df_out = df_out[front_cols + sorted(other_cols)]
 
@@ -264,6 +401,7 @@ def main():
         fallback = out_path.replace(".parquet", ".csv")
         df_out.to_csv(fallback, index=False)
         print(f"\n⚠️ Parquet write failed ({e}). Wrote CSV instead: {fallback}")
+
 
 
 if __name__ == "__main__":
