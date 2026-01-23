@@ -71,6 +71,10 @@ def resolve_channels(
     """
     Resolve the (value_backend, type_backend) to use for each logical channel.
 
+    Supports:
+      - value_backend as a single string (old behavior)
+      - value_backend as a list/tuple/set of strings (new behavior; priority order)
+
     Parameters
     ----------
     cap_df : DataFrame
@@ -80,7 +84,7 @@ def resolve_channels(
     channels : dict
         Mapping:
           channel_key -> {
-             "value_backend": "<exact string>",          # e.g., "I_Effective"
+             "value_backend": "<exact string>" OR ["cand1","cand2",...],
              "type_candidates": [list of exact strings], # priority order, e.g., ["Input01","L1"]
           }
     require_all : bool, default True
@@ -98,8 +102,8 @@ def resolve_channels(
     dict
         {
           channel_key: {
-              "value_backend": "...",
-              "type_backend": "<chosen candidate>",
+              "value_backend": "<chosen value_backend>",
+              "type_backend": "<chosen type_backend>",
               # if return_all=True:
               # "type_backends": ["cand1", "cand2", ...],
           },
@@ -118,15 +122,39 @@ def resolve_channels(
 
     out: dict[str, dict] = {}
     for key, spec in channels.items():
-        value_backend = str(spec["value_backend"])
+        vb_raw: Any = spec.get("value_backend")
+        if isinstance(vb_raw, (list, tuple, set)):
+            value_backends = [str(v) for v in vb_raw]
+        else:
+            value_backends = [str(vb_raw)]
+
         candidates = [str(c) for c in spec.get("type_candidates", [])]
 
-        # Filter to rows with matching value_backend
-        pool = dev_rows[dev_rows["value_backend"].astype(str) == value_backend]
+        # Filter to rows with matching value_backend (any candidate)
+        pool = dev_rows[dev_rows["value_backend"].astype(str).isin(value_backends)]
         if pool.empty:
             if require_all:
                 return {}
             continue
+
+        # Choose which value_backend to use (first that actually exists, in priority order)
+        chosen_vb = next(
+            (vb for vb in value_backends
+             if not pool[pool["value_backend"].astype(str) == vb].empty),
+            None
+        )
+        if chosen_vb is None:
+            if require_all:
+                return {}
+            continue
+
+        # Now restrict pool to the chosen value_backend
+        pool_vb = pool[pool["value_backend"].astype(str) == chosen_vb]
+        if pool_vb.empty:
+            if require_all:
+                return {}
+            continue
+
 
         # Collect all matching candidates, in priority order
         matched: list[str] = []
@@ -141,7 +169,7 @@ def resolve_channels(
 
         # Backwards-compatible: always keep a single 'type_backend' (first match)
         entry = {
-            "value_backend": value_backend,
+            "value_backend": chosen_vb,
             "type_backend": matched[0],
         }
 

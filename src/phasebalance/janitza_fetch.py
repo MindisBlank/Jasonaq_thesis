@@ -44,6 +44,11 @@ _LABEL_TO_TIMEBASE = {v.lower(): k for k, v in _TIMEBASE_LABELS.items()}
 class GridVisClientError(Exception):
     """Raised for input/HTTP/parsing errors in gridvis_hist_client."""
 
+def _is_energy_unit(unit: str | None) -> bool:
+    if not unit:
+        return False
+    u = unit.strip().lower()
+    return u in {"wh", "varh", "kwh", "kvarh", "mwh", "mvarh"}
 
 def _parse_timebase(tb: Union[int, str]) -> int:
     """
@@ -66,7 +71,6 @@ def _parse_timebase(tb: Union[int, str]) -> int:
         val = int(m.group(1))
         return val * 60 if m.group(2) == "m" else val * 3600
     raise GridVisClientError(f"Unrecognized timebase: {tb!r}")
-
 
 def _to_epoch_ms(
     dt_in: Union[str, datetime],
@@ -112,7 +116,6 @@ def _to_epoch_ms(
     dt_utc = dt_local.astimezone(ZoneInfo("UTC"))
     return int(dt_utc.timestamp() * 1000)
 
-
 def build_hist_url(
     *,
     device_id: int,
@@ -134,7 +137,6 @@ def build_hist_url(
         f"{variable_backend}/{phase_backend}/{tb_sec}.json"
         f"?start=UTC_{start_ms}&end=UTC_{end_ms}&timezone={tz_name}"
     )
-
 
 def _expand_timebases(tb: Union[int, str, list, tuple]) -> list[str]:
     """
@@ -216,10 +218,14 @@ def _aggregate_from_1min(data: Dict[str, Any], target_tb_sec: int) -> Dict[str, 
         new_data = dict(data)
         new_data["timebase"] = target_tb_sec
         new_data["values"] = []
+        new_data["__resampled__"] = True
         return new_data
 
     # Ensure values are in chronological order
     values.sort(key=lambda v: v.get("startTime", 0))
+
+    unit = (data.get("valueType") or {}).get("unit")
+    energy_mode = _is_energy_unit(unit)
 
     aggregated: list[Dict[str, Any]] = []
 
@@ -239,6 +245,20 @@ def _aggregate_from_1min(data: Dict[str, Any], target_tb_sec: int) -> Dict[str, 
             agg_entry["startTime"] = first["startTime"]
         if "endTime" in last:
             agg_entry["endTime"] = last["endTime"]
+
+        if energy_mode:
+            # ENERGY REGISTERS: avg behaves like a cumulative counter → keep last value
+            last_avg = None
+            for v in reversed(chunk):
+                if v.get("avg") is not None:
+                    last_avg = v.get("avg")
+                    break
+            if last_avg is not None:
+                agg_entry["avg"] = float(last_avg)
+
+            # Optional: keep min/max absent for energy (often NaN anyway)
+            aggregated.append(agg_entry)
+            continue
 
         # Aggregate max / min / avg if present
         max_vals = [v["max"] for v in chunk if "max" in v and v["max"] is not None]
@@ -380,12 +400,12 @@ def fetch_hist_json(
 # Optional: quick smoke test when running this file directly
 if __name__ == "__main__":
     # Edit these lines to test quickly inside VS Code.
-    DEVICE_ID        = 263 #262 , 263,
-    VARIABLE_BACKEND = "I_Effective"
-    PHASE_BACKEND    = "Input01"
-    TIMEBASE         = "15m"
+    DEVICE_ID        = 365 #262 , 263,
+    VARIABLE_BACKEND = "ActiveEnergy"
+    PHASE_BACKEND    = "SUM13"
+    TIMEBASE         = "1 hour"
     START            = "2025-11-01 12:00"
-    END              = "2025-11-01 13:00"
+    END              = "2025-11-01 14:00"
     AUTH_TOKEN       = None
 
     try:
