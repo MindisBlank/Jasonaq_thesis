@@ -11,7 +11,7 @@ __pycache__/
 
 /notebooks/figs/
 /notebooks/maps/
-
+/notebooks/data_exports/
 # results files
 /results/
 
