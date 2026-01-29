@@ -9,8 +9,8 @@ __pycache__/
 # data files
 /data/
 
-
 /notebooks/figs/
+/notebooks/maps/
 
 # results files
 /results/
