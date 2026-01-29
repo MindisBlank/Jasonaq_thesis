@@ -728,36 +728,31 @@ def fetch_meter_data_for_PF(
     start_date: str,
     end_date: str,
     output_path: str,
-    time_res: str = TIME_RES,
+    time_res: str = TIME_RES,  # e.g. "15 minutes"
     phases: list[str] = PHASES,
     power_phases: list[str] = POWER_PHS,
     voltage_phases: list[str] = V_PHS,
     e_q_plus: str = E_Q_PLUS,
     e_q_minus: str = E_Q_MINUS,
-    assume_power_kw: bool = False,
-) -> Tuple[pd.DataFrame, pd.DataFrame]:
+) -> pd.DataFrame:
     """
-    Fetch and save smartmeter feeder data for Power-Flow work for ONE selected
-    (substation_id, transformer) pair, plus a separate metering-point metadata table.
+    PF export (single parquet) at METER resolution:
+      - rows: (substation_id, transformer, mp_id, ts)
+      - columns: per-meter currents/power/voltages + per-meter Q estimate + meter metadata
+      - designed for joining to ArcGIS using mp_id / husveita_fastanumer / etc.
 
-    Outputs
-    -------
-    1) Timeseries parquet/csv at `output_path` (same columns as fetch_and_save_smartmeter)
-    2) Metadata parquet/csv at `output_path` with suffix `_mp_metadata`
-
-    Returns
-    -------
-    (pdf_timeseries, pdf_mp_metadata)
+    Writes ONE file to `output_path`.
     """
 
-    # --- validate inputs ---
     tr = str(transformer).strip().lower()
     if tr not in {"sp1", "sp2"}:
         raise ValueError(f"transformer must be 'sp1' or 'sp2', got: {transformer!r}")
 
     spark = get_spark()
 
-    # --- Build metering-point mapping for THIS feeder only ---
+    # ------------------------------
+    # 1) Metering point mapping + metadata (per meter, not aggregated)
+    # ------------------------------
     mp = spark.read.table("veiturdata_enriched_prd.utilities.metering_points")
 
     mp_base = (
@@ -775,6 +770,34 @@ def fetch_meter_data_for_PF(
         .filter(F.col("transformer") == F.lit(tr))
     )
 
+    mp_completed = (
+        mp_base.filter(F.col("uppsetningar_stada") != F.lit("planned"))
+        .select(
+            # join key to smartmeter (internal)
+            F.col("husveita_fastanumer").cast("string").alias("mp_id"),
+
+            # feeder identifiers
+            F.col("dreifistodvanumer").cast("int").alias("substation_id"),
+            "transformer",
+
+            # meter identifiers for ArcGIS joins
+            F.col("husveita_fastanumer").cast("string").alias("husveita_fastanumer"),
+            F.col("kennitalamaelistadar").cast("string").alias("kennitalamaelistadar"),
+            F.col("numer_heimlagnar").cast("string").alias("numer_heimlagnar"),  # <-- NEW
+
+            # requested metadata (NO renames)
+            F.col("dspennir").cast("int").alias("dspennir"),
+            F.col("tengiskapur").cast("string").alias("tengiskapur"),
+            F.col("submeter_pairing_group").cast("string").alias("submeter_pairing_group"),
+            F.col("latitude").cast("double").alias("latitude"),
+            F.col("longitude").cast("double").alias("longitude"),
+            F.col("lysingnotkunarflokks").cast("string").alias("lysingnotkunarflokks"),
+            F.col("notkunarstadur").cast("string").alias("notkunarstadur"),
+        )
+        .dropDuplicates(["mp_id"])
+    )
+
+    # Optional: add per_completed snapshot (feeder-level) as a scalar column if you still want it
     mp_status = (
         mp_base.groupBy("dreifistodvanumer", "transformer")
         .agg(
@@ -790,72 +813,20 @@ def fetch_meter_data_for_PF(
             F.col("dreifistodvanumer").alias("substation_id"),
             "transformer",
             "per_completed",
-            "n_completed",
             "n_total_mps",
         )
     )
 
-    # NOTE: keep your join key mp_id = husveita_fastanumer
-    # and include ALL requested metadata fields.
-    mp_completed = (
-        mp_base.filter(F.col("uppsetningar_stada") != F.lit("planned"))
-        .select(
-            # join key used by smartmeter table
-            F.col("husveita_fastanumer").cast("string").alias("mp_id"),
-
-            # feeder identifiers
-            F.col("dreifistodvanumer").cast("int").alias("substation_id"),
-            "transformer",
-
-            # existing fields you already had
-            F.col("tegund").cast("string").alias("tegund"),
-            F.col("husveita_fastanumer").cast("string").alias("husveita_fastanumer"),
-            F.col("kennitalamaelistadar").cast("string").alias("kennitalamaelistadar"),
-
-            # requested additions
-            F.col("dspennir").cast("int").alias("dspennir"),
-            F.col("tengiskapur").cast("string").alias("tengiskapur"),
-            F.col("submeter_pairing_group").cast("string").alias("submeter_pairing_group"),
-            F.col("latitude").cast("double").alias("latitude"),
-            F.col("longitude").cast("double").alias("longitude"),
-            F.col("lysingnotkunarflokks").cast("string").alias("lysingnotkunarflokks"),
-            F.col("notkunarstadur").cast("string").alias("notkunarstadur"),
-            F.col("dreifistodvanumer").cast("int").alias("dreifistodvanumer"),
-        )
-        .dropDuplicates(["mp_id"])
-    )
-
-    # --- Save metering-point metadata table (separate artifact) ---
-    mp_meta_spark = (
-        mp_completed.join(
-            mp_status.select("substation_id", "transformer", "per_completed"),
-            on=["substation_id", "transformer"],
-            how="left",
-        )
-        .orderBy("substation_id", "transformer", "mp_id")
-    )
-
-    mp_meta_pdf = mp_meta_spark.toPandas()
-    mp_meta_pdf.attrs.clear()
-
-    out_path = Path(output_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-
-    meta_path = out_path.with_name(out_path.stem + "_mp_metadata" + out_path.suffix)
-
-    if meta_path.suffix.lower() == ".parquet":
-        mp_meta_pdf.to_parquet(meta_path, index=False)
-    else:
-        mp_meta_pdf.to_csv(meta_path, index=False)
-
-    # --- Now fetch the smartmeter timeseries (same logic as fetch_and_save_smartmeter) ---
+    # ------------------------------
+    # 2) Fetch smartmeter rows for those meters
+    # ------------------------------
     sm_ts = spark.read.table("veiturdata_base_prd.ami.smartmeter")
 
     wanted_resulttypes = list(phases) + list(power_phases) + list(voltage_phases) + [e_q_plus, e_q_minus]
 
-    joined = (
+    raw = (
         sm_ts.withColumn("meteringpointid", F.col("meteringpointid").cast("string"))
-        .join(mp_completed.select("mp_id", "substation_id", "transformer"), F.col("meteringpointid") == F.col("mp_id"), "inner")
+        .join(mp_completed.select("mp_id"), F.col("meteringpointid") == F.col("mp_id"), "inner")
         .filter(
             (F.col("timestamp") >= F.lit(start_date))
             & (F.col("timestamp") <= F.lit(end_date))
@@ -864,56 +835,41 @@ def fetch_meter_data_for_PF(
         )
         .select(
             F.to_timestamp("timestamp").alias("ts"),
-            "resulttype",
+            F.col("meteringpointid").alias("mp_id"),
+            F.col("resulttype").alias("resulttype"),
             F.col("value").cast("double").alias("val"),
-            F.col("meteringpointid").alias("meteringpointid"),
-            "substation_id",
-            "transformer",
         )
     )
 
-    # Deduplicate per (substation, transformer, meter, resulttype, ts)
-    w_dedup = Window.partitionBy(
-        "substation_id", "transformer", "meteringpointid", "resulttype", "ts"
-    ).orderBy(F.col("ts"))
+    # Deduplicate per (mp_id, resulttype, ts)
+    w_dedup = Window.partitionBy("mp_id", "resulttype", "ts").orderBy(F.col("ts"))
+    raw = raw.withColumn("rn", F.row_number().over(w_dedup)).filter(F.col("rn") == 1).drop("rn")
 
-    joined_dedup = (
-        joined.withColumn("rn", F.row_number().over(w_dedup))
-        .filter(F.col("rn") == 1)
-        .drop("rn")
-    )
+    # Bin timestamp to time_res
+    raw = raw.withColumn("ts_res", F.window("ts", time_res).start)
 
-    # ------------------------------------------------------------------
-    # A) CURRENT aggregation
-    # ------------------------------------------------------------------
-    cur = joined_dedup.filter(F.col("resulttype").isin(*phases))
+    # ------------------------------
+    # 3) Pivot currents / powers / voltages per meter per bin
+    # ------------------------------
+    def pivot_avg(resulttypes: list[str], rename_map: dict[str, str]):
+        df = raw.filter(F.col("resulttype").isin(*resulttypes))
+        # average inside bin (per mp)
+        b = (
+            df.groupBy("mp_id", "ts_res", "resulttype")
+            .agg(F.avg("val").alias("v"))
+        )
+        wide = (
+            b.groupBy("mp_id", "ts_res")
+            .pivot("resulttype", resulttypes)
+            .agg(F.first("v"))
+        )
+        for k, v in rename_map.items():
+            wide = wide.withColumnRenamed(k, v)
+        return wide
 
-    n_mps_res = (
-        cur.withColumn("ts_res", F.window("ts", time_res).start)
-        .groupBy("substation_id", "transformer", "ts_res")
-        .agg(F.countDistinct("meteringpointid").alias("n_mps"))
-        .withColumnRenamed("ts_res", "ts")
-    )
-
-    sum_per_phase = (
-        cur.groupBy("substation_id", "transformer", "ts", "resulttype")
-        .agg(F.sum("val").alias("sum_I"))
-    )
-
-    sum_per_phase_res = (
-        sum_per_phase.withColumn("ts_res", F.window("ts", time_res).start)
-        .groupBy("substation_id", "transformer", "ts_res", "resulttype")
-        .agg(F.avg("sum_I").alias("I_res"))
-    )
-
-    cur_pivot = (
-        sum_per_phase_res.groupBy("substation_id", "transformer", "ts_res")
-        .pivot("resulttype", phases)
-        .agg(F.first("I_res"))
-        .withColumnRenamed("ts_res", "ts")
-        .withColumnRenamed(phases[0], "I_a")
-        .withColumnRenamed(phases[1], "I_b")
-        .withColumnRenamed(phases[2], "I_c")
+    cur_wide = pivot_avg(
+        phases,
+        {phases[0]: "I_a", phases[1]: "I_b", phases[2]: "I_c"},
     ).withColumn(
         "I_total",
         F.coalesce(F.col("I_a"), F.lit(0.0))
@@ -921,143 +877,82 @@ def fetch_meter_data_for_PF(
         + F.coalesce(F.col("I_c"), F.lit(0.0)),
     )
 
-    # ------------------------------------------------------------------
-    # B) POWER aggregation
-    # ------------------------------------------------------------------
-    p = joined_dedup.filter(F.col("resulttype").isin(*power_phases))
-
-    sumP_per_phase = (
-        p.groupBy("substation_id", "transformer", "ts", "resulttype")
-        .agg(F.sum("val").alias("sum_P"))
+    p_wide = pivot_avg(
+        power_phases,
+        {power_phases[0]: "P_a", power_phases[1]: "P_b", power_phases[2]: "P_c"},
+    ).withColumn(
+        "P_total",
+        F.coalesce(F.col("P_a"), F.lit(0.0))
+        + F.coalesce(F.col("P_b"), F.lit(0.0))
+        + F.coalesce(F.col("P_c"), F.lit(0.0)),
     )
 
-    sumP_per_phase_res = (
-        sumP_per_phase.withColumn("ts_res", F.window("ts", time_res).start)
-        .groupBy("substation_id", "transformer", "ts_res", "resulttype")
-        .agg(F.avg("sum_P").alias("P_res"))
+    v_wide = pivot_avg(
+        voltage_phases,
+        {voltage_phases[0]: "V_a", voltage_phases[1]: "V_b", voltage_phases[2]: "V_c"},
     )
-
-    p_pivot = (
-        sumP_per_phase_res.groupBy("substation_id", "transformer", "ts_res")
-        .pivot("resulttype", power_phases)
-        .agg(F.first("P_res"))
-        .withColumnRenamed("ts_res", "ts")
-        .withColumnRenamed(power_phases[0], "P_a")
-        .withColumnRenamed(power_phases[1], "P_b")
-        .withColumnRenamed(power_phases[2], "P_c")
-        .withColumn(
-            "P_total",
-            F.coalesce(F.col("P_a"), F.lit(0.0))
-            + F.coalesce(F.col("P_b"), F.lit(0.0))
-            + F.coalesce(F.col("P_c"), F.lit(0.0)),
-        )
-    )
-
-    # ------------------------------------------------------------------
-    # C) VOLTAGE aggregation
-    # ------------------------------------------------------------------
-    v = joined_dedup.filter(F.col("resulttype").isin(*voltage_phases))
-
-    v_per_phase = (
-        v.groupBy("substation_id", "transformer", "ts", "resulttype")
-        .agg(F.avg("val").alias("avg_V"))
-    )
-
-    v_per_phase_res = (
-        v_per_phase.withColumn("ts_res", F.window("ts", time_res).start)
-        .groupBy("substation_id", "transformer", "ts_res", "resulttype")
-        .agg(F.avg("avg_V").alias("V_res"))
-    )
-
-    v_pivot = (
-        v_per_phase_res.groupBy("substation_id", "transformer", "ts_res")
-        .pivot("resulttype", voltage_phases)
-        .agg(F.first("V_res"))
-        .withColumnRenamed("ts_res", "ts")
-        .withColumnRenamed(voltage_phases[0], "V_a")
-        .withColumnRenamed(voltage_phases[1], "V_b")
-        .withColumnRenamed(voltage_phases[2], "V_c")
-    )
-
-    v_sum = (
-        F.coalesce(F.col("V_a"), F.lit(0.0)) +
-        F.coalesce(F.col("V_b"), F.lit(0.0)) +
-        F.coalesce(F.col("V_c"), F.lit(0.0))
-    )
+    v_sum = F.coalesce(F.col("V_a"), F.lit(0.0)) + F.coalesce(F.col("V_b"), F.lit(0.0)) + F.coalesce(F.col("V_c"), F.lit(0.0))
     v_cnt = (
-        F.when(F.col("V_a").isNotNull(), F.lit(1)).otherwise(F.lit(0)) +
-        F.when(F.col("V_b").isNotNull(), F.lit(1)).otherwise(F.lit(0)) +
-        F.when(F.col("V_c").isNotNull(), F.lit(1)).otherwise(F.lit(0))
+        F.when(F.col("V_a").isNotNull(), 1).otherwise(0)
+        + F.when(F.col("V_b").isNotNull(), 1).otherwise(0)
+        + F.when(F.col("V_c").isNotNull(), 1).otherwise(0)
     )
+    v_wide = v_wide.withColumn("V_ph_avg", F.when(v_cnt > 0, v_sum / v_cnt).otherwise(F.lit(None)))
 
-    v_pivot = v_pivot.withColumn(
-        "V_ph_avg",
-        F.when(v_cnt > 0, v_sum / v_cnt).otherwise(F.lit(None))
-    )
-
-    # ------------------------------------------------------------------
-    # D) Q_total from reactive energy cumulative deltas
-    # ------------------------------------------------------------------
-    q = joined_dedup.filter(F.col("resulttype").isin(e_q_plus, e_q_minus))
+    # ------------------------------
+    # 4) Q_total per meter from reactive energy cumulative deltas
+    # ------------------------------
+    q = raw.filter(F.col("resulttype").isin(e_q_plus, e_q_minus))
 
     q_wide = (
-        q.groupBy("substation_id", "transformer", "meteringpointid", "ts")
+        q.groupBy("mp_id", "ts")
         .pivot("resulttype", [e_q_plus, e_q_minus])
         .agg(F.first("val"))
-        .withColumn(
-            "E_Q_net",
-            F.coalesce(F.col(e_q_plus), F.lit(0.0)) - F.coalesce(F.col(e_q_minus), F.lit(0.0))
-        )
+        .withColumn("E_Q_net", F.coalesce(F.col(e_q_plus), F.lit(0.0)) - F.coalesce(F.col(e_q_minus), F.lit(0.0)))
     )
 
-    w_q = Window.partitionBy("substation_id", "transformer", "meteringpointid").orderBy("ts")
-    q_wide = q_wide.withColumn("E_Q_net_prev", F.lag("E_Q_net").over(w_q))
-
+    wq = Window.partitionBy("mp_id").orderBy("ts")
+    q_wide = q_wide.withColumn("E_Q_net_prev", F.lag("E_Q_net").over(wq))
     q_wide = q_wide.withColumn(
         "dE_Q_kvarh",
-        F.when(F.col("E_Q_net_prev").isNull(), F.lit(None))
-         .otherwise(F.col("E_Q_net") - F.col("E_Q_net_prev"))
+        F.when(F.col("E_Q_net_prev").isNull(), F.lit(None)).otherwise(F.col("E_Q_net") - F.col("E_Q_net_prev"))
     )
+    q_wide = q_wide.withColumn("dE_Q_kvarh", F.when(F.col("dE_Q_kvarh") < 0, F.lit(None)).otherwise(F.col("dE_Q_kvarh")))
 
-    q_wide = q_wide.withColumn(
-        "dE_Q_kvarh",
-        F.when(F.col("dE_Q_kvarh") < F.lit(0.0), F.lit(None)).otherwise(F.col("dE_Q_kvarh"))
-    )
-
+    q_wide = q_wide.withColumn("ts_res", F.window("ts", time_res).start)
     bin_hours = float(_parse_minutes(time_res)) / 60.0
 
     q_bin = (
-        q_wide.withColumn("ts_res", F.window("ts", time_res).start)
-        .groupBy("substation_id", "transformer", "ts_res")
-        .agg(F.sum("dE_Q_kvarh").alias("E_Q_bin_kvarh"))
-        .withColumn("Q_total", F.col("E_Q_bin_kvarh") / F.lit(bin_hours))
-        .drop("E_Q_bin_kvarh")
-        .withColumnRenamed("ts_res", "ts")
+        q_wide.groupBy("mp_id", "ts_res")
+        .agg(F.sum("dE_Q_kvarh").alias("dE_Q_kvarh"))
+        .withColumn("Q_total", F.col("dE_Q_kvarh") / F.lit(bin_hours))
+        .drop("dE_Q_kvarh")
     )
 
-    # ------------------------------------------------------------------
-    # E) Join everything + compute I equivalents
-    # ------------------------------------------------------------------
-    result = (
-        cur_pivot
-        .join(n_mps_res, on=["substation_id", "transformer", "ts"], how="left")
-        .join(p_pivot,  on=["substation_id", "transformer", "ts"], how="left")
-        .join(v_pivot,  on=["substation_id", "transformer", "ts"], how="left")
-        .join(q_bin,    on=["substation_id", "transformer", "ts"], how="left")
-        .join(mp_status.select("substation_id", "transformer", "per_completed"), on=["substation_id", "transformer"], how="left")
+    # ------------------------------
+    # 5) Join per-meter signals + attach meter metadata (so ArcGIS join is trivial)
+    # ------------------------------
+    # Start from a base timeline = union of keys present in any wide table
+    keys = (
+        cur_wide.select("mp_id", "ts_res")
+        .union(p_wide.select("mp_id", "ts_res"))
+        .union(v_wide.select("mp_id", "ts_res"))
+        .union(q_bin.select("mp_id", "ts_res"))
+        .dropDuplicates()
     )
 
-    rollout_ts = build_rollout_timeseries(
-        spark=spark,
-        substation_ids=[int(substation_id)],
-        start_date=start_date,
-        end_date=end_date,
-        time_res=time_res,
-        substation_transformers=[(int(substation_id), tr)],
+    out = (
+        keys.join(cur_wide, on=["mp_id", "ts_res"], how="left")
+            .join(p_wide,   on=["mp_id", "ts_res"], how="left")
+            .join(v_wide,   on=["mp_id", "ts_res"], how="left")
+            .join(q_bin,    on=["mp_id", "ts_res"], how="left")
+            .join(mp_completed, on="mp_id", how="left")
+            .join(mp_status, on=["substation_id", "transformer"], how="left")
+            .withColumnRenamed("ts_res", "ts")
     )
-    result = result.join(rollout_ts, on=["substation_id", "transformer", "ts"], how="left")
 
-    result = result.withColumn(
+    # Optional: if you want a per-meter apparent power too
+    out = out.withColumn(
         "S_total",
         F.sqrt(
             F.coalesce(F.col("P_total"), F.lit(0.0)) * F.coalesce(F.col("P_total"), F.lit(0.0))
@@ -1065,32 +960,45 @@ def fetch_meter_data_for_PF(
         )
     )
 
-    k_factor = F.lit(1000.0) if assume_power_kw else F.lit(1.0)
-    num = F.coalesce(F.col("S_total"), F.lit(0.0)) * k_factor
+    out = (
+        out.select(
+            "substation_id", "transformer",
 
-    result = result.withColumn("I_sum_equiv",  F.try_divide(num, F.col("V_ph_avg")))
-    result = result.withColumn("I_line_equiv", F.try_divide(num, F.lit(3.0) * F.col("V_ph_avg")))
+            # mp_id dropped (same as husveita_fastanumer)
+            "husveita_fastanumer",
+            "kennitalamaelistadar",
+            "numer_heimlagnar",          
+            "ts",
 
-    result = (
-        result.select(
-            "substation_id", "transformer", "ts",
             "I_a", "I_b", "I_c", "I_total",
             "P_a", "P_b", "P_c", "P_total",
             "Q_total",
             "V_a", "V_b", "V_c", "V_ph_avg",
             "S_total",
-            "I_sum_equiv",
-            "I_line_equiv",
-            "n_mps",
-            "n_eligible",
-            "n_total_mps",
+
+            # meter metadata
+            "dspennir",
+            "latitude",
+            "longitude",
+            "tengiskapur",
+            "notkunarstadur",
+            "lysingnotkunarflokks",
+            "submeter_pairing_group",
+
+            # feeder snapshot info (optional)
             "per_completed",
+            "n_total_mps",
         )
-        .orderBy("substation_id", "transformer", "ts")
+        .orderBy("husveita_fastanumer", "ts")
     )
 
-    # --- write timeseries ---
-    pdf = result.toPandas()
+    # ------------------------------
+    # 6) Write ONE output file
+    # ------------------------------
+    out_path = Path(output_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    pdf = out.toPandas()
     pdf.attrs.clear()
 
     if out_path.suffix.lower() == ".parquet":
@@ -1098,14 +1006,12 @@ def fetch_meter_data_for_PF(
     else:
         pdf.to_csv(out_path, index=False)
 
-    print(f"Saved {len(pdf)} rows to {out_path}")
-    print(f"Saved {len(mp_meta_pdf)} metering-point metadata rows to {meta_path}")
-
-    return pdf, mp_meta_pdf
+    print(f"Saved {len(pdf)} rows to {out_path} (per-meter PF table)")
+    return pdf
 
 
 if __name__ == "__main__":
-    
+
     SID = 1416
     TR  = "sp1"
 
@@ -1156,7 +1062,7 @@ if __name__ == "__main__":
 
         out_path = Path("data") /"smartmeter" / f"smartmeter_15min__substation_{SID:04d}_transformer_{TR}_{start_tag}_{end_tag}.parquet"
 
-        ts_df, mp_meta_df = fetch_meter_data_for_PF(
+        df = fetch_meter_data_for_PF(
         substation_id=SID,
         transformer=TR,
         start_date="2025-09-01 00:00:00",
