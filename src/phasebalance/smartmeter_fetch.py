@@ -25,6 +25,8 @@ E_Q_MINUS = "LP1_ReactiveEnergyMinus_CUM_T0"
 E_P_PLUS  = "LP1_ActiveEnergyPlus_CUM_T0"
 E_P_MINUS = "LP1_ActiveEnergyMinus_CUM_T0"
 V_PHS     = ["LPQ_Voltage_L1_AVG","LPQ_Voltage_L2_AVG","LPQ_Voltage_L3_AVG"]
+PF_RT = "LP1_PowerFactor_LASTAVG"
+
 
 def load_substation_transformers_from_parquet(parquet_path: str | Path) -> list[tuple[int, str]]:
     """
@@ -234,7 +236,7 @@ def fetch_and_save_smartmeter(
 
     sm_ts = spark.read.table("veiturdata_base_prd.ami.smartmeter")
 
-    wanted_resulttypes = list(phases) + list(power_phases) + list(voltage_phases) + [e_q_plus, e_q_minus]
+    wanted_resulttypes = list(phases) + list(power_phases) + list(voltage_phases) + [PF_RT]
 
     joined = (
         sm_ts.withColumn("meteringpointid", F.col("meteringpointid").cast("string"))
@@ -242,8 +244,11 @@ def fetch_and_save_smartmeter(
         .filter(
             (F.col("timestamp") >= F.lit(start_date))
             & (F.col("timestamp") <= F.lit(end_date))
-            & (F.col("validity") == F.lit("Valid"))
             & (F.col("resulttype").isin(*wanted_resulttypes))
+            & (
+                F.col("validity").isin("Valid", "Validated")
+                | (F.col("resulttype") == F.lit(PF_RT))
+            )
         )
         .select(
             F.to_timestamp("timestamp").alias("ts"),
@@ -398,48 +403,75 @@ def fetch_and_save_smartmeter(
 
 
 
-
     # ------------------------------------------------------------------
-    # D) Q_total from reactive energy cumulative deltas (kvarh -> kvar)
+    # D) Power factor: compute PF_used (scalar) + PF_sm (per-bin average)
     # ------------------------------------------------------------------
-    q = joined_dedup.filter(F.col("resulttype").isin(e_q_plus, e_q_minus))
+    pf_rows = joined_dedup.filter(F.col("resulttype") == F.lit(PF_RT))
+    p_rows  = joined_dedup.filter(F.col("resulttype").isin(*power_phases))
 
-    # pivot only the two energy channels per meter+ts (cheap)
-    q_wide = (
-        q.groupBy("substation_id", "transformer", "meteringpointid", "ts")
-        .pivot("resulttype", [e_q_plus, e_q_minus])
-        .agg(F.first("val"))
-        .withColumn(
-            "E_Q_net",
-            F.coalesce(F.col(e_q_plus), F.lit(0.0)) - F.coalesce(F.col(e_q_minus), F.lit(0.0))
+    # Pivot PF and P_a/P_b/P_c at meter+ts to apply filtering
+    pfp = (
+        pf_rows.select("substation_id","transformer","meteringpointid","ts", F.col("val").alias("pf"))
+        .join(
+            p_rows.groupBy("substation_id","transformer","meteringpointid","ts","resulttype")
+                .agg(F.first("val").alias("pval")),
+            on=["substation_id","transformer","meteringpointid","ts"],
+            how="inner",
         )
     )
 
-    w_q = Window.partitionBy("substation_id", "transformer", "meteringpointid").orderBy("ts")
-    q_wide = q_wide.withColumn("E_Q_net_prev", F.lag("E_Q_net").over(w_q))
-
-    q_wide = q_wide.withColumn(
-        "dE_Q_kvarh",
-        F.when(F.col("E_Q_net_prev").isNull(), F.lit(None))
-         .otherwise(F.col("E_Q_net") - F.col("E_Q_net_prev"))
+    pfp_wide = (
+        pfp.groupBy("substation_id","transformer","meteringpointid","ts")
+        .pivot("resulttype", power_phases)
+        .agg(F.first("pval"))
+        .withColumn(
+            "P_total_meter",
+            F.coalesce(F.col(power_phases[0]), F.lit(0.0))
+            + F.coalesce(F.col(power_phases[1]), F.lit(0.0))
+            + F.coalesce(F.col(power_phases[2]), F.lit(0.0))
+        )
     )
 
-    # Guard: drop negative deltas (meter rollover/reset) rather than polluting sums
-    q_wide = q_wide.withColumn(
-        "dE_Q_kvarh",
-        F.when(F.col("dE_Q_kvarh") < F.lit(0.0), F.lit(None)).otherwise(F.col("dE_Q_kvarh"))
+    # Apply your robust filters (PF>=0.3 and P_total>=200)
+    pfp_wide = (
+    pfp.groupBy("substation_id","transformer","meteringpointid","ts","pf")
+       .pivot("resulttype", power_phases)
+       .agg(F.first("pval"))
+       .withColumn(
+           "P_total_meter",
+           F.coalesce(F.col(power_phases[0]), F.lit(0.0))
+         + F.coalesce(F.col(power_phases[1]), F.lit(0.0))
+         + F.coalesce(F.col(power_phases[2]), F.lit(0.0))
+       )
     )
 
-    bin_hours = float(_parse_minutes(time_res)) / 60.0
-
-    q_bin = (
-        q_wide.withColumn("ts_res", F.window("ts", time_res).start)
-        .groupBy("substation_id", "transformer", "ts_res")
-        .agg(F.sum("dE_Q_kvarh").alias("E_Q_bin_kvarh"))
-        .withColumn("Q_total", F.col("E_Q_bin_kvarh") / F.lit(bin_hours))
-        .drop("E_Q_bin_kvarh")
-        .withColumnRenamed("ts_res", "ts")
+    pfp_filt = pfp_wide.filter(
+        (F.col("pf").isNotNull())
+        & (F.col("pf") >= F.lit(0.3))
+        & (F.col("pf") <= F.lit(1.0))
+        & (F.col("P_total_meter") >= F.lit(200.0))
     )
+
+    print("PF/P joined rows:", pfp.count())
+    print("PF/P filtered rows:", pfp_filt.count())
+
+
+    # Compute scalar PF_used per (substation, transformer) over the whole window
+    pf_used_df = (
+        pfp_filt.groupBy("substation_id","transformer")
+                .agg(F.avg("pf").alias("PF_used"))
+    )
+
+    # Attach PF_used to the per-bin table later (after we have ts bins)
+    # Also compute PF_sm = average PF across meters per bin (useful for debugging)
+    pf_sm_bin = (
+        pfp_filt.withColumn("ts_res", F.window("ts", time_res).start)
+                .groupBy("substation_id","transformer","ts_res")
+                .agg(F.avg("pf").alias("PF_sm"))
+                .withColumnRenamed("ts_res","ts")
+    )
+
+
 
     # ------------------------------------------------------------------
     # E) Join everything + compute I_est
@@ -449,7 +481,22 @@ def fetch_and_save_smartmeter(
     result = result.join(n_mps_res, on=["substation_id", "transformer", "ts"], how="left")
     result = result.join(p_pivot,    on=["substation_id", "transformer", "ts"], how="left")
     result = result.join(v_pivot,    on=["substation_id", "transformer", "ts"], how="left")
-    result = result.join(q_bin,      on=["substation_id", "transformer", "ts"], how="left")
+    # Join PF_used (feeder scalar) + PF_sm (per-bin average)
+    result = result.join(pf_used_df, on=["substation_id","transformer"], how="left")
+    result = result.join(pf_sm_bin,  on=["substation_id","transformer","ts"], how="left")
+
+    # Fallback if PF_used missing (safety)
+    result = result.withColumn("PF_used", F.coalesce(F.col("PF_used"), F.lit(0.9)))
+    # Compute per-phase reactive power using PF_used
+    tanphi = F.tan(F.acos(F.col("PF_used")))
+
+    result = (
+    result
+    .withColumn("Q_a", F.coalesce(F.col("P_a"), F.lit(0.0)) * tanphi)
+    .withColumn("Q_b", F.coalesce(F.col("P_b"), F.lit(0.0)) * tanphi)
+    .withColumn("Q_c", F.coalesce(F.col("P_c"), F.lit(0.0)) * tanphi)
+    .withColumn("Q_total", F.col("Q_a") + F.col("Q_b") + F.col("Q_c"))
+    )
 
     # per_completed snapshot
     result = result.join(
@@ -512,8 +559,10 @@ def fetch_and_save_smartmeter(
 
             # power-based estimate
             "P_a", "P_b", "P_c", "P_total",
-            "Q_total",
+            "PF_used", "PF_sm",
+            "Q_a", "Q_b", "Q_c", "Q_total",
             "V_a", "V_b", "V_c", "V_ph_avg",
+
             "S_total",
             "I_sum_equiv",
             "I_line_equiv",
@@ -822,7 +871,7 @@ def fetch_meter_data_for_PF(
     # ------------------------------
     sm_ts = spark.read.table("veiturdata_base_prd.ami.smartmeter")
 
-    wanted_resulttypes = list(phases) + list(power_phases) + list(voltage_phases) + [e_q_plus, e_q_minus]
+    wanted_resulttypes = list(phases) + list(power_phases) + list(voltage_phases) + [PF_RT]
 
     raw = (
         sm_ts.withColumn("meteringpointid", F.col("meteringpointid").cast("string"))
@@ -830,8 +879,11 @@ def fetch_meter_data_for_PF(
         .filter(
             (F.col("timestamp") >= F.lit(start_date))
             & (F.col("timestamp") <= F.lit(end_date))
-            & (F.col("validity") == F.lit("Valid"))
             & (F.col("resulttype").isin(*wanted_resulttypes))
+            & (
+                F.col("validity").isin("Valid", "Validated")
+                | (F.col("resulttype") == F.lit(PF_RT))
+            )
         )
         .select(
             F.to_timestamp("timestamp").alias("ts"),
@@ -899,35 +951,45 @@ def fetch_meter_data_for_PF(
     )
     v_wide = v_wide.withColumn("V_ph_avg", F.when(v_cnt > 0, v_sum / v_cnt).otherwise(F.lit(None)))
 
+    pf_wide = pivot_avg(
+        [PF_RT],
+        {PF_RT: "PF_sm"}
+    )
+
     # ------------------------------
-    # 4) Q_total per meter from reactive energy cumulative deltas
+    # 4) Compute feeder PF_used and per-meter Q from PF_used
     # ------------------------------
-    q = raw.filter(F.col("resulttype").isin(e_q_plus, e_q_minus))
 
-    q_wide = (
-        q.groupBy("mp_id", "ts")
-        .pivot("resulttype", [e_q_plus, e_q_minus])
-        .agg(F.first("val"))
-        .withColumn("E_Q_net", F.coalesce(F.col(e_q_plus), F.lit(0.0)) - F.coalesce(F.col(e_q_minus), F.lit(0.0)))
+    # Build a table with P_total and PF_sm to compute PF_used
+    pf_for_used = (
+        p_wide.join(pf_wide, on=["mp_id","ts_res"], how="inner")
+            .filter(
+                (F.col("PF_sm").isNotNull())
+                & (F.col("PF_sm") >= F.lit(0.3))
+                & (F.col("PF_sm") <= F.lit(1.0))
+                & (F.col("P_total") >= F.lit(200.0))
+            )
     )
 
-    wq = Window.partitionBy("mp_id").orderBy("ts")
-    q_wide = q_wide.withColumn("E_Q_net_prev", F.lag("E_Q_net").over(wq))
-    q_wide = q_wide.withColumn(
-        "dE_Q_kvarh",
-        F.when(F.col("E_Q_net_prev").isNull(), F.lit(None)).otherwise(F.col("E_Q_net") - F.col("E_Q_net_prev"))
-    )
-    q_wide = q_wide.withColumn("dE_Q_kvarh", F.when(F.col("dE_Q_kvarh") < 0, F.lit(None)).otherwise(F.col("dE_Q_kvarh")))
+    # Collect scalar PF_used for this (substation, transformer, period)
+    pf_used = pf_for_used.agg(F.avg("PF_sm").alias("PF_used")).collect()[0]["PF_used"]
+    if pf_used is None:
+        pf_used = 0.9  # safety fallback
 
-    q_wide = q_wide.withColumn("ts_res", F.window("ts", time_res).start)
-    bin_hours = float(_parse_minutes(time_res)) / 60.0
+    tanphi_lit = F.tan(F.acos(F.lit(float(pf_used))))
 
-    q_bin = (
-        q_wide.groupBy("mp_id", "ts_res")
-        .agg(F.sum("dE_Q_kvarh").alias("dE_Q_kvarh"))
-        .withColumn("Q_total", F.col("dE_Q_kvarh") / F.lit(bin_hours))
-        .drop("dE_Q_kvarh")
+    # Compute Q per phase from P per phase (per meter)
+    q_from_pf = (
+        p_wide
+        .select("mp_id", "ts_res", "P_a", "P_b", "P_c")  # only what we need to compute Q
+        .withColumn("PF_used", F.lit(float(pf_used)))
+        .withColumn("Q_a", F.coalesce(F.col("P_a"), F.lit(0.0)) * tanphi_lit)
+        .withColumn("Q_b", F.coalesce(F.col("P_b"), F.lit(0.0)) * tanphi_lit)
+        .withColumn("Q_c", F.coalesce(F.col("P_c"), F.lit(0.0)) * tanphi_lit)
+        .withColumn("Q_total", F.col("Q_a") + F.col("Q_b") + F.col("Q_c"))
+        .select("mp_id", "ts_res", "PF_used", "Q_a", "Q_b", "Q_c", "Q_total")
     )
+
 
     # ------------------------------
     # 5) Join per-meter signals + attach meter metadata (so ArcGIS join is trivial)
@@ -937,19 +999,22 @@ def fetch_meter_data_for_PF(
         cur_wide.select("mp_id", "ts_res")
         .union(p_wide.select("mp_id", "ts_res"))
         .union(v_wide.select("mp_id", "ts_res"))
-        .union(q_bin.select("mp_id", "ts_res"))
+        .union(pf_wide.select("mp_id", "ts_res"))
         .dropDuplicates()
     )
 
+
     out = (
-        keys.join(cur_wide, on=["mp_id", "ts_res"], how="left")
-            .join(p_wide,   on=["mp_id", "ts_res"], how="left")
-            .join(v_wide,   on=["mp_id", "ts_res"], how="left")
-            .join(q_bin,    on=["mp_id", "ts_res"], how="left")
+        keys.join(cur_wide,   on=["mp_id", "ts_res"], how="left")
+            .join(p_wide,     on=["mp_id", "ts_res"], how="left")
+            .join(v_wide,     on=["mp_id", "ts_res"], how="left")
+            .join(pf_wide,    on=["mp_id", "ts_res"], how="left")     # PF_sm per meter/bin
+            .join(q_from_pf,  on=["mp_id", "ts_res"], how="left")     # Q_* from PF_used
             .join(mp_completed, on="mp_id", how="left")
             .join(mp_status, on=["substation_id", "transformer"], how="left")
             .withColumnRenamed("ts_res", "ts")
     )
+
 
     # Optional: if you want a per-meter apparent power too
     out = out.withColumn(
@@ -970,9 +1035,12 @@ def fetch_meter_data_for_PF(
             "numer_heimlagnar",          
             "ts",
 
+            # currents
             "I_a", "I_b", "I_c", "I_total",
+
             "P_a", "P_b", "P_c", "P_total",
-            "Q_total",
+            "PF_used", "PF_sm",
+            "Q_a", "Q_b", "Q_c", "Q_total",
             "V_a", "V_b", "V_c", "V_ph_avg",
             "S_total",
 
@@ -1019,7 +1087,7 @@ if __name__ == "__main__":
 
     # 2) Define time window
     start = "2025-08-01 00:00:00"
-    end   = "2025-11-01 00:00:00"
+    end   = "2025-09-01 00:00:00"
 
     #Turn start/end into compact tags for the filename
     fmt_in = "%Y-%m-%d %H:%M:%S"
