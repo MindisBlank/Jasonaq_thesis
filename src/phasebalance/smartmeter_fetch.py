@@ -1080,7 +1080,7 @@ def fetch_meter_data_for_PF(
 
 if __name__ == "__main__":
 
-    SID = 579
+    SID = 1456
     TR  = "sp1"
 
     choice = 2 # 1=all substations, 2=single substation

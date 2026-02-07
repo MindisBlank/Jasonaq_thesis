@@ -1,12 +1,12 @@
 # Jason power flow configuration
 # To switch substations: change IDs and smartmeter_file
 
-IDs: ["1299"]
+IDs: ["1456"]
 
 Jason_settings:
-  smartmeter_file: "smartmeter_15min__substation_1299_transformer_sp1_20250801_20250901.parquet"
+  smartmeter_file: "smartmeter_15min__substation_1456_transformer_sp1_20250801_20250901.parquet"
   default_service_fuse_size: 25
-  phase_ratio: [90, 5, 5]   # % of single-phase meters assigned to phase A, B, C
+  phase_ratio: [45, 28, 27]   # % of single-phase meters assigned to phase A, B, C
   phase_seed: 42               # fixed seed for reproducible phase assignment
 
 # smartmeter_15min__substation_0670_transformer_sp1_20250801_20250901.parquet
@@ -16,3 +16,4 @@ Jason_settings:
 # smartmeter_15min__substation_1248_transformer_sp1_20250801_20250901.parquet
 # smartmeter_15min__substation_1398_transformer_sp1_20250801_20250901.parquet 
 # smartmeter_15min__substation_0579_transformer_sp1_20250801_20250901.parquet 
+# smartmeter_15min__substation_1456_transformer_sp1_20250801_20250901.parquet # something wrong with topology power flow skips since it say no loads on transformer
