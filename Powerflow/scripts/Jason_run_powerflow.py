@@ -35,6 +35,7 @@ import argparse
 import re
 import logging
 from pathlib import Path
+from collections import deque
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -116,6 +117,25 @@ def build_balanced_loads(Ploads_sub, Qloads_sub):
     Qloads_bal = {'a': Q_per_phase.copy(), 'b': Q_per_phase.copy(), 'c': Q_per_phase.copy()}
 
     return Ploads_bal, Qloads_bal
+
+
+def find_reachable_buses(net, root_bus):
+    """BFS from root_bus through net.line AND net.trafo to find all reachable buses."""
+    visited = {root_bus}
+    queue = deque([root_bus])
+    while queue:
+        bus = queue.popleft()
+        # Neighbors via lines
+        neighbors = net.line.loc[net.line.from_bus == bus, 'to_bus'].tolist()
+        neighbors += net.line.loc[net.line.to_bus == bus, 'from_bus'].tolist()
+        # Neighbors via transformers (hv_bus <-> lv_bus)
+        neighbors += net.trafo.loc[net.trafo.hv_bus == bus, 'lv_bus'].tolist()
+        neighbors += net.trafo.loc[net.trafo.lv_bus == bus, 'hv_bus'].tolist()
+        for nb in neighbors:
+            if nb not in visited:
+                visited.add(nb)
+                queue.append(nb)
+    return visited
 
 
 def run_powerflow_loop(net, ts_index, Ploads_run, Qloads_run, Pgens_sub, Qgens_sub,
@@ -561,18 +581,24 @@ def main():
                     name=str(line_idx)
                 )
 
-        # Drop isolated buses
-        isolated_buses = []
-        for bus in net.bus.index[1:]:
-            if len(net.line[net.line.from_bus == bus]) == 0 and len(net.line[net.line.to_bus == bus]) == 0:
-                isolated_buses.append(bus)
-        if isolated_buses:
-            logger.warning(f"Dropping {len(isolated_buses)} isolated buses")
-            for bus in isolated_buses:
+        # Drop buses not reachable from the transformer (handles both
+        # degree-zero buses AND disconnected subgraphs/islands)
+        reachable = find_reachable_buses(net, buses_dict['lv_trafo'])
+        disconnected = set(net.bus.index) - reachable
+        if disconnected:
+            logger.warning(f"Dropping {len(disconnected)} disconnected buses (not reachable from transformer)")
+            for bus in sorted(disconnected, reverse=True):
                 pp.drop_buses(net, [bus])
                 to_remove = [k for k, v in buses_dict.items() if v == bus]
                 for k in to_remove:
                     del buses_dict[k]
+            # Sync lines_dict: pp.drop_buses also removes lines connected to dropped buses
+            surviving_lines = set(net.line.index)
+            stale = [k for k, v in lines_dict.items() if v not in surviving_lines]
+            for k in stale:
+                del lines_dict[k]
+            if stale:
+                logger.info(f"  Also removed {len(stale)} lines connected to dropped buses")
 
         # ---- Map meters to buses and isolate per-phase loads ----
         mapping = meter_and_cabinet.set_index('METER_NUMBER')
