@@ -349,24 +349,40 @@ def plot_diurnal_heatmap(df: pd.DataFrame, device_id: int, metric_name: str, dpi
     fig.tight_layout(); fig.savefig(output_path, bbox_inches="tight"); plt.close(fig)
 
 
-def plot_exceedance_and_taat(series: pd.Series, thresholds: Dict[str, float], metrics: Dict[str, float], device_id: int, metric_name: str, dpi: int, output_path: str) -> None:
+def plot_exceedance_and_taat(
+    series: pd.Series,
+    thresholds: Dict[str, float],
+    metrics: Dict[str, float],
+    device_id: int,
+    metric_name: str,
+    dpi: int,
+    output_path: str
+) -> None:
+    # Now: ONLY the exceedance curve (no TAAT subplot).
     if series.empty:
         _save_text_figure("No data", f"Device {device_id} - {metric_name}", output_path, dpi=dpi)
         return
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4), dpi=dpi)
-    vals = np.sort(series.to_numpy()); exc = 1.0 - np.arange(1, len(vals) + 1) / float(len(vals))
+
+    fig, ax1 = plt.subplots(1, 1, figsize=(6, 4), dpi=dpi)
+
+    vals = np.sort(series.to_numpy())
+    exc = 1.0 - np.arange(1, len(vals) + 1) / float(len(vals))
+
     ax1.plot(vals, exc * 100.0, color="#4daf4a", linewidth=1.5)
+
     for band, thr in thresholds.items():
         ax1.axvline(thr, color=SEVERITY_COLORS.get(band, "#ccc"), linestyle="--", alpha=0.7)
-    ax1.set_xlabel(f"{metric_name}"); ax1.set_ylabel("% time ≥ τ"); ax1.set_title("Exceedance curve"); ax1.grid(True, linestyle=":", linewidth=0.5, alpha=0.6)
-    taats = [metrics.get(f"{b}_taat_h", 0.0) or 0.0 for b in ("mild", "moderate", "severe")]
-    bottom = 0.0
-    for val, b, lbl in zip(taats, ("mild", "moderate", "severe"), ("Mild", "Moderate", "Severe")):
-        ax2.bar(["TAAT"], [val], bottom=bottom, color=SEVERITY_COLORS.get(b, "#ccc"), label=lbl)
-        bottom += val
-    ax2.set_ylabel("Hours"); ax2.set_title("TAAT by severity"); ax2.legend()
+
+    ax1.set_xlabel(metric_name)
+    ax1.set_ylabel("% time ≥ τ")
+    ax1.set_title("Exceedance curve")
+    ax1.grid(True, linestyle=":", linewidth=0.5, alpha=0.6)
+
     fig.suptitle(f"Device {device_id} - {metric_name}")
-    fig.tight_layout(); fig.savefig(output_path, bbox_inches="tight"); plt.close(fig)
+    fig.tight_layout()
+    fig.savefig(output_path, bbox_inches="tight")
+    plt.close(fig)
+
 
 
 def plot_ternary(df: pd.DataFrame, device_id: int, dpi: int, output_path: str) -> None:
