@@ -53,8 +53,9 @@ CABLE_PROPERTIES = {
 }
 
 # LV line types to include
-LV_LINE_TYPES = ['Heimtaug', 'Lágspennudreifilögn', 'Lágspennustrengur']
-# Note: 'Lágspennudreifilögn' is the actual value in the data (not 'Lágspennulögn')
+LV_LINE_TYPES = ['Heimtaug', 'Lágspennudreifilögn', 'Lágspennustrengur', 'Lágspennu- og götuljósalögn']
+# Note: 'Lágspennu- og götuljósalögn' = combined LV + street lighting trunk cables.
+# These carry 400V power and are essential for network connectivity (not pure street lighting).
 
 # Cable type mapping: material -> cable_type code
 MATERIAL_TO_CABLE_TYPE = {
@@ -156,6 +157,11 @@ def translate_topology(lines_df, cabinets_df, transformers_df):
             from_str = from_str[:-2]
         if to_str.endswith('.0') and to_str[:-2].isdigit():
             to_str = to_str[:-2]
+
+        # Skip lines with placeholder node "0" (invalid in topology)
+        if from_str == '0' or to_str == '0':
+            logger.warning(f"Skipping line {line['OBJECTID']}: FROM={from_str}/TO={to_str} is invalid placeholder")
+            continue
 
         # Determine node types
         # "D1416" or just "1416" as FROM typically means transformer/feeder connection
@@ -377,6 +383,16 @@ def main():
     logger.info(f"Substation: {SUBSTATION_ID}")
     logger.info(f"Input dir:  {input_dir}")
     logger.info(f"Output dir: {output_dir}")
+
+    # --- Validate input paths ---
+    if not input_dir.exists():
+        logger.error(f"Topology directory not found: {input_dir}")
+        logger.error(f"No ArcGIS data export for substation {SUBSTATION_ID}. Skipping.")
+        return
+
+    if not smartmeter_path.exists():
+        logger.error(f"Smart meter file not found: {smartmeter_path}")
+        return
 
     # --- Load source data ---
     logger.info("\nLoading source data...")
