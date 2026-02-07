@@ -21,6 +21,7 @@ results/report*
 
 # power flow files
 /Powerflow/output/
+/Powerflow/config/jason_config.yaml
 
 
 # C extensions
