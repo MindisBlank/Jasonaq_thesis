@@ -27,6 +27,7 @@ E_P_MINUS = "LP1_ActiveEnergyMinus_CUM_T0"
 V_PHS     = ["LPQ_Voltage_L1_AVG","LPQ_Voltage_L2_AVG","LPQ_Voltage_L3_AVG"]
 PF_RT = "LP1_PowerFactor_LASTAVG"
 
+#TODO change the power factor to just assume 0.9 since the current method does not hold up aginst validation .
 
 def load_substation_transformers_from_parquet(parquet_path: str | Path) -> list[tuple[int, str]]:
     """

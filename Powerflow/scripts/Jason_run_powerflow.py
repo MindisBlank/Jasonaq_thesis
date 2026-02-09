@@ -186,9 +186,12 @@ def run_powerflow_loop(net, ts_index, Ploads_run, Qloads_run, Pgens_sub, Qgens_s
     # Grid exchange
     power_grid = pd.DataFrame(columns=['P', 'Q'], index=ts_index)
 
-    # Transformer
+    # Transformer loading + per-phase power (for validation against Janitza / smart meters)
     trafo_3ph = pd.DataFrame(
-        columns=['loading_percent', 'loading_a_percent', 'loading_b_percent', 'loading_c_percent'],
+        columns=['loading_percent', 'loading_a_percent', 'loading_b_percent', 'loading_c_percent',
+                 'P_a_kw', 'P_b_kw', 'P_c_kw',
+                 'Q_a_kvar', 'Q_b_kvar', 'Q_c_kvar',
+                 'S_a_kva', 'S_b_kva', 'S_c_kva'],
         index=ts_index
     )
 
@@ -290,11 +293,40 @@ def run_powerflow_loop(net, ts_index, Ploads_run, Qloads_run, Pgens_sub, Qgens_s
         # Grid exchange (res_ext_grid_3ph has per-phase columns)
         if hasattr(net, 'res_ext_grid_3ph') and len(net.res_ext_grid_3ph) > 0:
             eg = net.res_ext_grid_3ph.loc[0]
-            power_grid.loc[ts, 'P'] = (eg['p_a_mw'] + eg['p_b_mw'] + eg['p_c_mw']) * 1000
-            power_grid.loc[ts, 'Q'] = (eg['q_a_mvar'] + eg['q_b_mvar'] + eg['q_c_mvar']) * 1000
+            p_a = eg['p_a_mw'] * 1000   # kW
+            p_b = eg['p_b_mw'] * 1000
+            p_c = eg['p_c_mw'] * 1000
+            q_a = eg['q_a_mvar'] * 1000  # kvar
+            q_b = eg['q_b_mvar'] * 1000
+            q_c = eg['q_c_mvar'] * 1000
+            power_grid.loc[ts, 'P'] = p_a + p_b + p_c
+            power_grid.loc[ts, 'Q'] = q_a + q_b + q_c
+            # Per-phase power for validation against Janitza / smart meters
+            trafo_3ph.loc[ts, 'P_a_kw'] = p_a
+            trafo_3ph.loc[ts, 'P_b_kw'] = p_b
+            trafo_3ph.loc[ts, 'P_c_kw'] = p_c
+            trafo_3ph.loc[ts, 'Q_a_kvar'] = q_a
+            trafo_3ph.loc[ts, 'Q_b_kvar'] = q_b
+            trafo_3ph.loc[ts, 'Q_c_kvar'] = q_c
+            trafo_3ph.loc[ts, 'S_a_kva'] = np.sqrt(p_a**2 + q_a**2)
+            trafo_3ph.loc[ts, 'S_b_kva'] = np.sqrt(p_b**2 + q_b**2)
+            trafo_3ph.loc[ts, 'S_c_kva'] = np.sqrt(p_c**2 + q_c**2)
         elif len(net.res_ext_grid) > 0:
-            power_grid.loc[ts, 'P'] = net.res_ext_grid.loc[0, 'p_mw'] * 1000
-            power_grid.loc[ts, 'Q'] = net.res_ext_grid.loc[0, 'q_mvar'] * 1000
+            p_total = net.res_ext_grid.loc[0, 'p_mw'] * 1000
+            q_total = net.res_ext_grid.loc[0, 'q_mvar'] * 1000
+            power_grid.loc[ts, 'P'] = p_total
+            power_grid.loc[ts, 'Q'] = q_total
+            # Balanced fallback: split equally across phases
+            trafo_3ph.loc[ts, 'P_a_kw'] = p_total / 3
+            trafo_3ph.loc[ts, 'P_b_kw'] = p_total / 3
+            trafo_3ph.loc[ts, 'P_c_kw'] = p_total / 3
+            trafo_3ph.loc[ts, 'Q_a_kvar'] = q_total / 3
+            trafo_3ph.loc[ts, 'Q_b_kvar'] = q_total / 3
+            trafo_3ph.loc[ts, 'Q_c_kvar'] = q_total / 3
+            s_per_phase = np.sqrt((p_total/3)**2 + (q_total/3)**2)
+            trafo_3ph.loc[ts, 'S_a_kva'] = s_per_phase
+            trafo_3ph.loc[ts, 'S_b_kva'] = s_per_phase
+            trafo_3ph.loc[ts, 'S_c_kva'] = s_per_phase
 
         # Transformer (per-phase loading from res_trafo_3ph)
         if hasattr(net, 'res_trafo_3ph') and len(net.res_trafo_3ph) > 0:
@@ -399,15 +431,32 @@ def run_powerflow_loop(net, ts_index, Ploads_run, Qloads_run, Pgens_sub, Qgens_s
     fig.savefig(result_path / 'Ilines_neutral.png', dpi=150, bbox_inches='tight')
     plt.close(fig)
 
-    # 5. Transformer loading
-    fig, ax = plt.subplots(figsize=(14, 5), dpi=150)
+    # 5. Transformer loading (%) + per-phase apparent power (kVA)
     trafo_num = trafo_3ph.apply(pd.to_numeric, errors='coerce')
-    ax.plot(trafo_num['loading_percent'], color='tab:purple')
-    ax.axhline(y=100, color='red', linestyle='--', label='100% loading')
-    ax.set_ylabel('Transformer Loading [%]')
-    ax.set_title(f'Transformer Loading [{run_label}] - Substation {sub}')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
+    trafo_cap_kva = net.trafo.sn_mva.iloc[0] * 1000  # kVA
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 8), dpi=150, sharex=True)
+
+    # Top: loading %
+    ax1.plot(trafo_num['loading_percent'], color='tab:purple', linewidth=0.8)
+    ax1.axhline(y=100, color='red', linestyle='--', label='100% loading')
+    ax1.set_ylabel('Transformer Loading [%]')
+    ax1.set_title(f'Transformer Loading [{run_label}] — Substation {sub} ({trafo_cap_kva:.0f} kVA)')
+    ax1.legend(loc='upper right')
+    ax1.grid(True, alpha=0.3)
+
+    # Bottom: per-phase apparent power in kVA
+    for phase, col, color in [('A', 'S_a_kva', 'tab:red'), ('B', 'S_b_kva', 'tab:blue'), ('C', 'S_c_kva', 'tab:green')]:
+        ax2.plot(trafo_num[col], label=f'S phase {phase}', color=color, alpha=0.7, linewidth=0.8)
+    s_total = trafo_num['S_a_kva'] + trafo_num['S_b_kva'] + trafo_num['S_c_kva']
+    ax2.plot(s_total, label='S total', color='black', linewidth=1.0)
+    ax2.axhline(y=trafo_cap_kva, color='red', linestyle='--', alpha=0.5, label=f'Rated {trafo_cap_kva:.0f} kVA')
+    ax2.set_ylabel('Apparent Power [kVA]')
+    ax2.set_xlabel('Time')
+    ax2.legend(loc='upper right')
+    ax2.grid(True, alpha=0.3)
+
+    fig.tight_layout()
     fig.savefig(result_path / 'trafo_loading_3ph.png', dpi=150, bbox_inches='tight')
     plt.close(fig)
 
