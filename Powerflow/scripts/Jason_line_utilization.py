@@ -43,6 +43,10 @@ PF_RESULTS_DIR = PROJECT_ROOT / "Powerflow" / "output" / "pf_results"
 # Load growth assumption for reinforcement deferral analysis
 ANNUAL_GROWTH_RATE = 0.02  # 2% per year
 
+# Only include these substations in the cross-substation comparison
+# Set to None to include all substations with results
+SELECTED_SUBSTATIONS = ['1056', '1299', '1340', '1398', '1457', '579']
+
 
 # ---------------------------------------------------------------------------
 #  Core computation functions
@@ -340,6 +344,122 @@ def plot_deferral_years(summary, path, sub, top_n=15):
 
 
 # ---------------------------------------------------------------------------
+#  Cross-substation plotting
+# ---------------------------------------------------------------------------
+
+def plot_cross_sub_headroom(cross_df, path):
+    """
+    Bar chart of mean ΔU_99 (capacity headroom freed by rebalancing) per substation,
+    plus a weighted-average bar.  Max ΔU_99 is annotated above each bar.
+    """
+    df = cross_df.copy()
+
+    # Weighted average across all substations (weighted by number of lines)
+    total_lines = df['n_lines'].sum()
+    weighted_mean = (df['mean_delta_u_99'] * df['n_lines']).sum() / total_lines
+    weighted_max = df['max_delta_u_99'].max()
+
+    # Append weighted-average row
+    avg_row = pd.DataFrame([{
+        'substation': 'Avg',
+        'n_lines': total_lines,
+        'mean_delta_u_99': weighted_mean,
+        'max_delta_u_99': weighted_max,
+    }])
+    df = pd.concat([df, avg_row], ignore_index=True)
+
+    fig, ax = plt.subplots(figsize=(12, 6), dpi=150)
+    x = np.arange(len(df))
+
+    colors = ['#FF6B00'] * (len(df) - 1) + ['#333333']  # dark bar for average
+    bars = ax.bar(x, df['mean_delta_u_99'] * 100, width=0.6,
+                  color=colors, alpha=0.85, edgecolor='black', linewidth=0.5)
+
+    # Annotate max ΔU on top of each bar
+    for i, (_, row) in enumerate(df.iterrows()):
+        mean_val = row['mean_delta_u_99'] * 100
+        max_val = row['max_delta_u_99'] * 100
+        # Value label inside/on bar
+        ax.text(i, mean_val + 0.3, f'{mean_val:.1f} pp',
+                ha='center', va='bottom', fontsize=9, fontweight='bold')
+        # Max annotation
+        if max_val > mean_val + 0.5:
+            ax.text(i, mean_val + 1.5, f'(max {max_val:.1f})',
+                    ha='center', va='bottom', fontsize=7, color='#555555')
+
+    ax.set_xticks(x)
+    labels = [f'Sub {r["substation"]}\n({r["n_lines"]} lines)' for _, r in df.iterrows()]
+    ax.set_xticklabels(labels, fontsize=9)
+    ax.set_ylabel('Mean Capacity Headroom $\\overline{\\Delta U_{99}}$ [pp]')
+    ax.set_title('Capacity Headroom Freed by Phase Rebalancing')
+    ax.grid(True, axis='y', alpha=0.3)
+
+    fig.tight_layout()
+    fig.savefig(path / 'cross_substation_headroom.png', dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    logger.info("  Saved cross_substation_headroom.png")
+
+
+def plot_cross_sub_deferral(cross_df, path):
+    """
+    Bar chart of mean (and max) deferral years per substation,
+    plus a weighted-average bar.
+    """
+    df = cross_df.copy()
+
+    # Weighted average deferral (weighted by n_lines)
+    total_lines = df['n_lines'].sum()
+    weighted_mean_defer = (df['mean_deferral_years'] * df['n_lines']).sum() / total_lines
+    weighted_max_defer = df['max_deferral_years'].max()
+
+    avg_row = pd.DataFrame([{
+        'substation': 'Avg',
+        'n_lines': total_lines,
+        'mean_deferral_years': weighted_mean_defer,
+        'max_deferral_years': weighted_max_defer,
+    }])
+    df = pd.concat([df, avg_row], ignore_index=True)
+
+    fig, ax = plt.subplots(figsize=(12, 6), dpi=150)
+    x = np.arange(len(df))
+    width = 0.35
+
+    colors_mean = ['#1976D2'] * (len(df) - 1) + ['#333333']
+    colors_max = ['#90CAF9'] * (len(df) - 1) + ['#888888']
+
+    ax.bar(x - width / 2, df['mean_deferral_years'], width,
+           color=colors_mean, alpha=0.85, edgecolor='black', linewidth=0.5,
+           label='Mean deferral')
+    ax.bar(x + width / 2, df['max_deferral_years'], width,
+           color=colors_max, alpha=0.7, edgecolor='black', linewidth=0.5,
+           label='Max deferral (best-case line)')
+
+    # Annotate values
+    for i, (_, row) in enumerate(df.iterrows()):
+        mean_d = row['mean_deferral_years']
+        max_d = row['max_deferral_years']
+        if np.isfinite(mean_d):
+            ax.text(i - width / 2, mean_d + 0.3, f'{mean_d:.1f}',
+                    ha='center', va='bottom', fontsize=8, fontweight='bold')
+        if np.isfinite(max_d):
+            ax.text(i + width / 2, max_d + 0.3, f'{max_d:.0f}',
+                    ha='center', va='bottom', fontsize=8, color='#555555')
+
+    ax.set_xticks(x)
+    labels = [f'Sub {r["substation"]}\n({r["n_lines"]} lines)' for _, r in df.iterrows()]
+    ax.set_xticklabels(labels, fontsize=9)
+    ax.set_ylabel(f'Reinforcement Deferral [years] (at {ANNUAL_GROWTH_RATE*100:.0f}% growth)')
+    ax.set_title('Reinforcement Deferral from Phase Rebalancing')
+    ax.legend(loc='upper right', fontsize=9)
+    ax.grid(True, axis='y', alpha=0.3)
+
+    fig.tight_layout()
+    fig.savefig(path / 'cross_substation_deferral.png', dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    logger.info("  Saved cross_substation_deferral.png")
+
+
+# ---------------------------------------------------------------------------
 #  Summary printing
 # ---------------------------------------------------------------------------
 
@@ -374,19 +494,25 @@ def _print_sub_summary(summary, sub):
 
 
 def _print_cross_sub_summary(rows):
-    """Print cross-substation summary."""
-    logger.info(f"\n{'='*80}")
-    logger.info("Cross-Substation Summary")
-    logger.info(f"{'='*80}")
+    """Print cross-substation summary with headroom and deferral columns."""
+    logger.info(f"\n{'='*100}")
+    logger.info("Cross-Substation Line Utilization Summary")
+    logger.info(f"{'='*100}")
     logger.info(f"  {'Sub':>5} {'Lines':>6} {'U_pk99':>8} {'U_bl99':>8} "
-                f"{'ΔU_99':>7} {'MeanΔU':>8} {'N>50%':>6} {'N>80%':>6} {'N>100%':>7}")
-    logger.info(f"  {'─'*75}")
+                f"{'MaxΔU':>7} {'MeanΔU':>8} {'N>50%':>6} {'N>80%':>6} {'N>100%':>7} "
+                f"{'MnDefer':>8} {'MxDefer':>8}")
+    logger.info(f"  {'─'*95}")
     for r in rows:
+        mn_d = r.get('mean_deferral_years', float('nan'))
+        mx_d = r.get('max_deferral_years', float('nan'))
+        mn_d_str = f"{mn_d:>7.1f}y" if np.isfinite(mn_d) else f"{'—':>8}"
+        mx_d_str = f"{mx_d:>7.0f}y" if np.isfinite(mx_d) else f"{'—':>8}"
         logger.info(
             f"  {r['substation']:>5} {r['n_lines']:>6} "
             f"{r['max_u_peak_99']*100:>7.1f}% {r['max_u_balanced_99']*100:>7.1f}% "
             f"{r['max_delta_u_99']*100:>6.1f}pp {r['mean_delta_u_99']*100:>7.2f}pp "
-            f"{r['n_above_50_unbal']:>6} {r['n_above_80_unbal']:>6} {r['n_above_100_unbal']:>7}"
+            f"{r['n_above_50_unbal']:>6} {r['n_above_80_unbal']:>6} {r['n_above_100_unbal']:>7} "
+            f"{mn_d_str} {mx_d_str}"
         )
 
 
@@ -416,7 +542,14 @@ def main():
         logger.error("No substations found with unbalanced power flow results.")
         return
 
-    logger.info(f"Substations found: {substations}")
+    # Filter to selected substations if specified
+    if SELECTED_SUBSTATIONS is not None:
+        substations = [s for s in substations if s in SELECTED_SUBSTATIONS]
+        if not substations:
+            logger.error(f"None of the selected substations {SELECTED_SUBSTATIONS} have results.")
+            return
+
+    logger.info(f"Substations to process: {substations}")
 
     cross_sub_rows = []
 
@@ -465,7 +598,8 @@ def main():
         # Step 6: Print summary table
         _print_sub_summary(summary, sub)
 
-        # Collect cross-substation stats
+        # Collect cross-substation stats (including deferral & headroom)
+        valid_defer = summary['deferral_years'].dropna()
         cross_sub_rows.append({
             'substation': sub,
             'n_lines': len(summary),
@@ -476,14 +610,22 @@ def main():
             'n_above_50_unbal': (summary['share_above_50'] > 0).sum(),
             'n_above_80_unbal': (summary['share_above_80'] > 0).sum(),
             'n_above_100_unbal': (summary['share_above_100'] > 0).sum(),
+            'mean_deferral_years': valid_defer.mean() if len(valid_defer) > 0 else np.nan,
+            'max_deferral_years': valid_defer.max() if len(valid_defer) > 0 else np.nan,
+            'n_above_50_bal': (summary['u_balanced_99'] > 0.5).sum(),
         })
 
     # Cross-substation summary
     if cross_sub_rows:
         _print_cross_sub_summary(cross_sub_rows)
 
-        # Save cross-substation summary
         cross_df = pd.DataFrame(cross_sub_rows)
+
+        # Generate cross-substation plots
+        plot_cross_sub_headroom(cross_df, PF_RESULTS_DIR)
+        plot_cross_sub_deferral(cross_df, PF_RESULTS_DIR)
+
+        # Save cross-substation summary
         cross_df.to_parquet(PF_RESULTS_DIR / 'cross_substation_line_utilization.parquet', index=False)
         logger.info(f"\n  Saved cross_substation_line_utilization.parquet")
 

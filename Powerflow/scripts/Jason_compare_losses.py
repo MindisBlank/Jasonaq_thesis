@@ -34,6 +34,10 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent.parent
 PF_RESULTS_DIR = PROJECT_ROOT / "Powerflow" / "output" / "pf_results"
 
+# Only include these substations in the cross-substation comparison
+# Set to None to include all substations with results
+SELECTED_SUBSTATIONS = ['1056', '1299', '1340', '1398', '1457', '579']
+
 
 def load_loss_data(sub_path, run_label):
     """
@@ -355,6 +359,112 @@ def compute_summary(df, dt_hours=0.25):
     return pd.DataFrame([summary])
 
 
+def plot_cross_substation_bar(all_summaries, path):
+    """
+    Grouped bar chart comparing unbalanced vs balanced losses across all substations.
+    Stacked by component: cable phase, cable neutral, trafo copper, trafo iron.
+    Includes a 'Total' group showing the aggregate.
+    """
+    # Build totals row
+    totals = all_summaries[['unbalanced_phase_kwh', 'unbalanced_neutral_kwh',
+                            'unbalanced_trafo_copper_kwh', 'unbalanced_trafo_iron_kwh',
+                            'balanced_phase_kwh', 'balanced_neutral_kwh',
+                            'balanced_trafo_copper_kwh', 'balanced_trafo_iron_kwh',
+                            'unbalanced_total_kwh', 'balanced_total_kwh',
+                            'additional_total_kwh', 'throughput_kwh']].sum()
+    totals['substation'] = 'Total'
+    totals_df = pd.DataFrame([totals])
+    df = pd.concat([all_summaries, totals_df], ignore_index=True)
+
+    labels = df['substation'].astype(str).tolist()
+    n = len(labels)
+    x = np.arange(n)
+    width = 0.35
+
+    fig, ax = plt.subplots(figsize=(14, 6), dpi=150)
+
+    # Balanced (left bars) — stacked
+    b_phase = df['balanced_phase_kwh'].values
+    b_neutral = df['balanced_neutral_kwh'].values
+    b_tcu = df['balanced_trafo_copper_kwh'].values
+    b_tfe = df['balanced_trafo_iron_kwh'].values
+
+    ax.bar(x - width/2, b_phase, width, color='#1976D2', alpha=0.8, label='Cable phase')
+    ax.bar(x - width/2, b_neutral, width, bottom=b_phase, color='#FF6B00', alpha=0.8, label='Cable neutral')
+    ax.bar(x - width/2, b_tcu, width, bottom=b_phase+b_neutral, color='#7B1FA2', alpha=0.8, label='Trafo copper')
+    ax.bar(x - width/2, b_tfe, width, bottom=b_phase+b_neutral+b_tcu, color='#388E3C', alpha=0.8, label='Trafo iron')
+
+    # Unbalanced (right bars) — stacked
+    u_phase = df['unbalanced_phase_kwh'].values
+    u_neutral = df['unbalanced_neutral_kwh'].values
+    u_tcu = df['unbalanced_trafo_copper_kwh'].values
+    u_tfe = df['unbalanced_trafo_iron_kwh'].values
+
+    ax.bar(x + width/2, u_phase, width, color='#1976D2', alpha=0.4)
+    ax.bar(x + width/2, u_neutral, width, bottom=u_phase, color='#FF6B00', alpha=0.4)
+    ax.bar(x + width/2, u_tcu, width, bottom=u_phase+u_neutral, color='#7B1FA2', alpha=0.4)
+    ax.bar(x + width/2, u_tfe, width, bottom=u_phase+u_neutral+u_tcu, color='#388E3C', alpha=0.4)
+
+    # Annotate additional losses above each pair
+    for i in range(n):
+        add_kwh = df.iloc[i]['additional_total_kwh']
+        bal_kwh = df.iloc[i]['balanced_total_kwh']
+        unbal_kwh = df.iloc[i]['unbalanced_total_kwh']
+        pct = add_kwh / bal_kwh * 100 if bal_kwh > 0 else 0
+        y_top = max(unbal_kwh, bal_kwh)
+        ax.text(i, y_top + y_top * 0.02, f'+{add_kwh:.0f} kWh\n({pct:.1f}%)',
+                ha='center', fontsize=8, color='#D32F2F', fontweight='bold')
+
+    # Separator line before Total
+    ax.axvline(x=n - 1.5, color='gray', linestyle='--', alpha=0.5)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, fontsize=10)
+    ax.set_ylabel('Distribution Losses [kWh]')
+    ax.set_title('Cross-Substation Loss Comparison: Balanced (solid) vs Unbalanced (faded)')
+    ax.legend(loc='upper left', fontsize=8)
+    ax.grid(True, axis='y', alpha=0.3)
+
+    fig.tight_layout()
+    fig.savefig(path / 'cross_substation_loss_comparison.png', dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    logger.info(f"Saved cross_substation_loss_comparison.png")
+
+
+def plot_cross_substation_loss_percent(all_summaries, path):
+    """
+    Bar chart showing loss_increase_percent per substation + weighted average.
+    """
+    # Weighted average: total additional / total balanced × 100
+    total_add = all_summaries['additional_total_kwh'].sum()
+    total_bal = all_summaries['balanced_total_kwh'].sum()
+    weighted_avg = total_add / total_bal * 100 if total_bal > 0 else 0
+
+    labels = all_summaries['substation'].astype(str).tolist() + ['Weighted\nAverage']
+    values = all_summaries['loss_increase_percent'].tolist() + [weighted_avg]
+    colors = ['#D32F2F'] * len(all_summaries) + ['#1976D2']
+
+    fig, ax = plt.subplots(figsize=(10, 5), dpi=150)
+    bars = ax.bar(labels, values, color=colors, alpha=0.8, edgecolor='black', linewidth=0.5)
+
+    # Annotate values
+    for bar, val in zip(bars, values):
+        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.3,
+                f'{val:.1f}%', ha='center', fontsize=10, fontweight='bold')
+
+    # Separator before average
+    ax.axvline(x=len(all_summaries) - 0.5, color='gray', linestyle='--', alpha=0.5)
+
+    ax.set_ylabel('Additional Losses from Imbalance [%]')
+    ax.set_title('Loss Increase Due to Phase Imbalance by Substation')
+    ax.grid(True, axis='y', alpha=0.3)
+
+    fig.tight_layout()
+    fig.savefig(path / 'cross_substation_loss_percent.png', dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    logger.info(f"Saved cross_substation_loss_percent.png")
+
+
 def main():
     logger.info("=" * 80)
     logger.info("Jason Loss Comparison: Unbalanced vs Balanced")
@@ -379,7 +489,16 @@ def main():
         logger.error("Run Jason_run_powerflow.py --mode both first.")
         return
 
+    # Filter to selected substations if specified
+    if SELECTED_SUBSTATIONS is not None:
+        substations = [s for s in substations if s in SELECTED_SUBSTATIONS]
+        if not substations:
+            logger.error(f"None of the selected substations {SELECTED_SUBSTATIONS} have results.")
+            return
+
     logger.info(f"Substations with both runs: {substations}")
+
+    all_summaries = []
 
     for sub in substations:
         logger.info(f"\n{'='*60}")
@@ -437,6 +556,53 @@ def main():
         logger.info(f"    Transformer copper:      {s['additional_trafo_copper_kwh']:.2f} kWh")
         logger.info(f"  Peak additional loss:      {s['additional_peak_kw']:.4f} kW")
         logger.info(f"  Mean additional loss:      {s['additional_mean_kw']:.4f} kW")
+
+        # Collect for cross-substation summary
+        s_row = summary.iloc[0].to_dict()
+        s_row['substation'] = sub
+        all_summaries.append(s_row)
+
+    # ------------------------------------------------------------------
+    #  Cross-substation aggregate summary
+    # ------------------------------------------------------------------
+    if len(all_summaries) > 1:
+        cross_df = pd.DataFrame(all_summaries)
+
+        # Compute weighted totals
+        total_throughput = cross_df['throughput_kwh'].sum()
+        total_unbal = cross_df['unbalanced_total_kwh'].sum()
+        total_bal = cross_df['balanced_total_kwh'].sum()
+        total_add = cross_df['additional_total_kwh'].sum()
+        weighted_pct = total_add / total_bal * 100 if total_bal > 0 else 0
+
+        logger.info(f"\n{'='*80}")
+        logger.info("Cross-Substation Loss Summary")
+        logger.info(f"{'='*80}")
+        logger.info(f"  {'Sub':>6} {'Throughput':>12} {'Unbal':>10} {'Balanced':>10} "
+                     f"{'Additional':>11} {'Increase':>9} {'Loss%_unbal':>12} {'Loss%_bal':>10}")
+        logger.info(f"  {'─'*80}")
+        for _, r in cross_df.iterrows():
+            logger.info(
+                f"  {str(r['substation']):>6} {r['throughput_kwh']:>10.0f} kWh "
+                f"{r['unbalanced_total_kwh']:>8.1f} kWh {r['balanced_total_kwh']:>8.1f} kWh "
+                f"{r['additional_total_kwh']:>9.1f} kWh {r['loss_increase_percent']:>8.1f}% "
+                f"{r['unbalanced_loss_pct']:>10.3f}% {r['balanced_loss_pct']:>8.3f}%"
+            )
+        logger.info(f"  {'─'*80}")
+        logger.info(
+            f"  {'TOTAL':>6} {total_throughput:>10.0f} kWh "
+            f"{total_unbal:>8.1f} kWh {total_bal:>8.1f} kWh "
+            f"{total_add:>9.1f} kWh {weighted_pct:>8.1f}% "
+            f"{total_unbal/total_throughput*100:>10.3f}% {total_bal/total_throughput*100:>8.3f}%"
+        )
+
+        # Plots
+        plot_cross_substation_bar(cross_df, PF_RESULTS_DIR)
+        plot_cross_substation_loss_percent(cross_df, PF_RESULTS_DIR)
+
+        # Save
+        cross_df.to_parquet(PF_RESULTS_DIR / 'cross_substation_loss_summary.parquet', index=False)
+        logger.info(f"Saved cross_substation_loss_summary.parquet")
 
     logger.info("\n" + "=" * 80)
     logger.info("Loss comparison complete!")
