@@ -20,6 +20,7 @@ PHASES = [
 TIME_RES = "15 minutes"  # aggregation resolution
 
 POWER_PHS = ["AMP_Power_L1_AVG_T0","AMP_Power_L2_AVG_T0","AMP_Power_L3_AVG_T0"] # 10 min averages
+
 E_Q_PLUS  = "LP1_ReactiveEnergyPlus_CUM_T0"
 E_Q_MINUS = "LP1_ReactiveEnergyMinus_CUM_T0"
 E_P_PLUS  = "LP1_ActiveEnergyPlus_CUM_T0"
