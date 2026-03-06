@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "phasebalance"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "pandas",
+    "pandapower",
+    "matplotlib",
+    "mpltern",
+    "pyspark",
+    "requests",
+    "pyyaml",
+    "geopandas",
+    "scipy",
+    "scikit-learn",
+    "seaborn",
+    "shapely",
+    "pyarrow",
+    "pillow",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
