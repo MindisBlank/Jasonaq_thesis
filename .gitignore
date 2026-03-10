@@ -23,7 +23,7 @@ __pycache__/
 
 #databricks
 databricks.yml
-JasonSQLsession.sql
+JasonSQL.session.sql
 typings/
 
 #docs
