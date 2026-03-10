@@ -15,6 +15,20 @@ __pycache__/
 # results files
 /results/
 
+# Claude
+.claude/
+
+#Vscode
+.vscode/
+
+#databricks
+databricks.yml
+JasonSQLsession.sql
+typings/
+
+#docs
+docs/
+
 # Logs and reports
 *.log
 results/report*
