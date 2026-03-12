@@ -14,7 +14,7 @@ Jason_settings:
 # smartmeter_15min__substation_1354_transformer_sp2_20250801_20250901.parquet
 # smartmeter_15min__substation_1299_transformer_sp1_20250801_20250901.parquet 
 # smartmeter_15min__substation_1248_transformer_sp1_20250801_20250901.parquet    
-# smartmeter_15min__substation_1398_transformer_sp1_20250801_20250901.parquet   49/48/3
+# smartmeter_15min__substation_1398_transformer_sp1_20250801_20250901.parquet   49/48/3 # seems to be missing a string in the topology map
 # smartmeter_15min__substation_0579_transformer_sp1_20250801_20250901.parquet   43/40/17
 # smartmeter_15min__substation_1456_transformer_sp1_20250801_20250901.parquet # something wrong with topology power flow skips since it say no loads on transformer   phase_ratio: [45, 28, 27]
 # smartmeter_15min__substation_1056_transformer_sp1_20250801_20250901.parquet  33/20/47

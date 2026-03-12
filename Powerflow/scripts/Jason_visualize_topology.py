@@ -2,15 +2,18 @@
 """
 Jason_visualize_topology.py
 ============================
-Creates a visual map of the network topology for validation.
+Creates visual maps of the network topology for validation.
 
 Reads the translated topology (from Jason_data_adapter.py output) and
 cross-references raw ArcGIS files (cabinets.csv, lines_clean.csv,
 transformers.csv) for spatial coordinates only.
 
-This validates that the data translation produces a correct, connected network.
+Produces three plots per substation:
+  1. Geographic layout  (Jason_topology_map.png)
+  2. Tree / hierarchical layout (Jason_topology_tree.png)
+  3. Force-directed spring layout (Jason_topology_spring.png)
 
-Saves output to Powerflow/output/Jason_topology_map.png
+Saves output to Powerflow/output/pf_results/{substation_id}/
 
 Usage:
     python Jason_visualize_topology.py
@@ -23,8 +26,10 @@ matplotlib.use('Agg')  # Non-interactive backend for saving to file
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from pathlib import Path
+from collections import deque
 import re
 import logging
+import networkx as nx
 from Jason_config import load_config
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -32,8 +37,6 @@ logger = logging.getLogger(__name__)
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent.parent
-OUTPUT_DIR = PROJECT_ROOT / "Powerflow" / "output"
-
 # Path to translated topology data (output from Jason_data_adapter.py)
 TOPO_DIR = PROJECT_ROOT / "Powerflow" / "output" / "topology"
 
@@ -41,6 +44,10 @@ TOPO_DIR = PROJECT_ROOT / "Powerflow" / "output" / "topology"
 SUBSTATION_ID = None
 LV_LINE_TYPES = ['Heimtaug', 'Lágspennudreifilögn']
 
+
+# ---------------------------------------------------------------------------
+#  Geometry helpers
+# ---------------------------------------------------------------------------
 
 def parse_geometry_first_point(geom_str):
     """Extract first coordinate from WKT LINESTRING or POINT geometry."""
@@ -71,6 +78,10 @@ def clean_node_id(node_val):
         s = s[:-2]
     return s
 
+
+# ---------------------------------------------------------------------------
+#  Coordinate lookup  (raw ArcGIS -> x, y)
+# ---------------------------------------------------------------------------
 
 def build_coordinate_lookup(cabinets_df, lines_df, transformers_df):
     """
@@ -146,8 +157,20 @@ def resolve_node_coord(node_name, raw_coords):
     return None, None
 
 
-def main():
-    # --- Load config ---
+# ---------------------------------------------------------------------------
+#  Data loading & classification
+# ---------------------------------------------------------------------------
+
+def load_topology_data():
+    """
+    Load config, topology CSVs, raw ArcGIS data.  Classify nodes and edges.
+
+    Returns
+    -------
+    dict with keys:
+        cfg, topo_sub, conn_sub, node_coords, node_types,
+        edge_types, all_nodes, cabinet_tenginr
+    """
     cfg = load_config()
     global SUBSTATION_ID
     SUBSTATION_ID = cfg['substation_id']
@@ -172,7 +195,7 @@ def main():
 
     if len(topo_sub) == 0:
         logger.error(f"No topology data found for substation {SUBSTATION_ID}. Run the data adapter first.")
-        return
+        return None
 
     # --- Load raw ArcGIS data for coordinates only ---
     topology_dir = cfg['topology_dir']
@@ -184,15 +207,12 @@ def main():
     raw_coords = build_coordinate_lookup(cabinets_df, lines_df, transformers_df)
     logger.info(f"Coordinate lookup: {len(raw_coords)} raw node positions")
 
-    # --- Build meter count per cabinet ---
-    meter_counts = conn_sub.groupby('cabinet').size().to_dict() if len(conn_sub) > 0 else {}
-
     # --- Identify junction cabinets from cabinets.csv ---
     cabinet_tenginr = set(str(int(c['TENGINR'])) for _, c in cabinets_df.iterrows())
 
     # --- Collect all unique nodes and classify them ---
-    node_coords = {}  # processed_node_name -> (x, y)
-    node_types = {}   # processed_node_name -> 'transformer' | 'junction_cabinet' | 'meter_endpoint'
+    node_coords = {}   # processed_node_name -> (x, y)
+    node_types = {}    # processed_node_name -> 'transformer' | 'junction_cabinet' | 'meter_endpoint'
 
     all_nodes = set(topo_sub['node1'].unique()) | set(topo_sub['node2'].unique())
 
@@ -219,7 +239,6 @@ def main():
     logger.info(f"Nodes with coordinates: {len(node_coords)} / {len(all_nodes)}")
 
     # --- Classify edges ---
-    # Determine if an edge is a feeder line (LvFeeder -> Cabinet) or service/distribution line
     edge_types = []  # list of (node1, node2, edge_type, attrs_dict)
     for _, row in topo_sub.iterrows():
         n1, n2 = row['node1'], row['node2']
@@ -229,9 +248,9 @@ def main():
         resistance = row.get('resistance', '')
 
         if n1.startswith('LvFeeder.'):
-            etype = 'feeder'  # Transformer to cabinet
+            etype = 'feeder'        # Transformer to cabinet
         elif node_types.get(n2) == 'meter_endpoint':
-            etype = 'service'  # Cabinet to meter endpoint
+            etype = 'service'       # Cabinet to meter endpoint
         else:
             etype = 'distribution'  # Cabinet to cabinet
 
@@ -242,14 +261,35 @@ def main():
             'resistance': resistance,
         }))
 
-    # --- Build figure ---
-    fig, ax = plt.subplots(1, 1, figsize=(18, 16), dpi=150)
+    return {
+        'cfg': cfg,
+        'topo_sub': topo_sub,
+        'conn_sub': conn_sub,
+        'node_coords': node_coords,
+        'node_types': node_types,
+        'edge_types': edge_types,
+        'all_nodes': all_nodes,
+        'cabinet_tenginr': cabinet_tenginr,
+    }
 
-    # Color and size settings
+
+# ---------------------------------------------------------------------------
+#  Shared drawing
+# ---------------------------------------------------------------------------
+
+def draw_topology(ax, positions, node_types, edge_types, substation_id,
+                  topo_sub, conn_sub, all_nodes, title_suffix=""):
+    """
+    Draw the topology (nodes + edges) onto a matplotlib Axes using the
+    supplied *positions* dict  {node_name: (x, y)}.
+
+    The same colours, markers, and legend are used regardless of layout.
+    """
+    # Colour / size / marker settings
     colors = {
-        'transformer': '#D32F2F',        # Red
-        'junction_cabinet': "#1976D2",   # Blue
-        'meter_endpoint': "#00AA00",     # Green
+        'transformer': '#D32F2F',
+        'junction_cabinet': '#1976D2',
+        'meter_endpoint': '#00AA00',
     }
     sizes = {
         'transformer': 250,
@@ -257,44 +297,26 @@ def main():
         'meter_endpoint': 50,
     }
     markers = {
-        'transformer': 's',       # Square
-        'junction_cabinet': 'D',  # Diamond
-        'meter_endpoint': 'o',    # Circle
+        'transformer': 's',
+        'junction_cabinet': 'D',
+        'meter_endpoint': 'o',
     }
-
-    # Edge style by type
     edge_styles = {
-        'feeder': {'color': "#9C27B0", 'linewidth': 2.5, 'linestyle': '-'},       # Purple for feeder trunk
-        'distribution': {'color': "#00C853", 'linewidth': 2.0, 'linestyle': '-'},  # Green for distribution
-        'service': {'color': "#FF6B00", 'linewidth': 1.0, 'linestyle': '-'},       # Orange for service
+        'feeder':       {'color': '#9C27B0', 'linewidth': 2.5, 'linestyle': '-'},
+        'distribution': {'color': '#00C853', 'linewidth': 2.0, 'linestyle': '-'},
+        'service':      {'color': '#FF6B00', 'linewidth': 1.0, 'linestyle': '-'},
     }
 
-    # Draw edges from PROCESSED topology
+    # --- Draw edges ---
     for n1, n2, etype, attrs in edge_types:
-        if n1 in node_coords and n2 in node_coords:
-            x1, y1 = node_coords[n1]
-            x2, y2 = node_coords[n2]
+        if n1 in positions and n2 in positions:
+            x1, y1 = positions[n1]
+            x2, y2 = positions[n2]
             style = edge_styles.get(etype, edge_styles['service'])
             ax.plot([x1, x2], [y1, y2], **style, alpha=0.7, zorder=1)
 
-            # Edge label at midpoint
-            cable_len = attrs['cable_length']
-            cable_type = attrs['cable_type']
-            phase_size = attrs['phase_size']
-            if cable_len > 0:
-                mx, my = (x1 + x2) / 2, (y1 + y2) / 2
-                parts = []
-                if cable_type:
-                    parts.append(str(cable_type))
-                if phase_size:
-                    parts.append(f"{phase_size}mm2")
-                parts.append(f"{cable_len:.0f}m")
-                label = " ".join(parts)
-                ax.annotate(label, (mx, my), fontsize=3.5, ha='center', va='center',
-                            color='#555555', alpha=0.8, zorder=2)
-
-    # Draw nodes
-    for node_name, (x, y) in node_coords.items():
+    # --- Draw nodes ---
+    for node_name, (x, y) in positions.items():
         ntype = node_types.get(node_name, 'meter_endpoint')
         ax.scatter(x, y, c=colors[ntype], s=sizes[ntype],
                    marker=markers[ntype], zorder=3, edgecolors='white', linewidths=0.5)
@@ -307,60 +329,222 @@ def main():
                         ha='center', va='bottom', xytext=(0, 14),
                         textcoords='offset points', color=colors[ntype])
         elif ntype == 'junction_cabinet':
-            n_meters = meter_counts.get(node_name, 0)
-            label = f"{node_name}\n({n_meters} meters)"
-            ax.annotate(label, (x, y), fontsize=5.5, fontweight='bold',
+            ax.annotate(node_name, (x, y), fontsize=5.5, fontweight='bold',
                         ha='center', va='bottom', xytext=(0, 10),
                         textcoords='offset points', color=colors[ntype])
-        else:  # meter_endpoint
-            n_meters = meter_counts.get(node_name, 0)
-            raw_id = node_name.split('.')[-1] if '.' in node_name else node_name
-            label = raw_id
-            if n_meters > 0:
-                label = f"{raw_id}\n({n_meters}m)"
-            # Only show labels if not too many endpoints
-            n_endpoints = sum(1 for v in node_types.values() if v == 'meter_endpoint')
-            if n_endpoints < 50:
-                ax.annotate(label, (x, y), fontsize=3.5, ha='center', va='bottom',
-                            xytext=(0, 6), textcoords='offset points', color='#333333', alpha=0.7)
+        else:  # meter_endpoint — no label, just the dot
+            pass
 
-    # Legend
+    # --- Legend ---
     legend_elements = [
         mpatches.Patch(facecolor=colors['transformer'], label='Transformer (LvFeeder)'),
         mpatches.Patch(facecolor=colors['junction_cabinet'], label='Junction Cabinet'),
-        mpatches.Patch(facecolor=colors['meter_endpoint'], label='Meter Endpoint (Cabinet.{line_id})'),
-        plt.Line2D([0], [0], **edge_styles['feeder'], label='Feeder Trunk (Transformer to Cabinet)'),
-        plt.Line2D([0], [0], **edge_styles['distribution'], label='Distribution (Cabinet to Cabinet)'),
-        plt.Line2D([0], [0], **edge_styles['service'], label='Service Cable (Cabinet to Endpoint)'),
+        mpatches.Patch(facecolor=colors['meter_endpoint'], label='Meter Endpoint'),
+        plt.Line2D([0], [0], **edge_styles['feeder'], label='Feeder Trunk'),
+        plt.Line2D([0], [0], **edge_styles['distribution'], label='Distribution Cable'),
+        plt.Line2D([0], [0], **edge_styles['service'], label='Service Cable'),
     ]
     ax.legend(handles=legend_elements, loc='upper left', fontsize=8, framealpha=0.9)
 
-    # Title with topology stats
+    # --- Title ---
     n_trans = sum(1 for v in node_types.values() if v == 'transformer')
     n_junct = sum(1 for v in node_types.values() if v == 'junction_cabinet')
     n_endpt = sum(1 for v in node_types.values() if v == 'meter_endpoint')
 
     ax.set_title(
-        f'Network Topology: Substation {SUBSTATION_ID}\n'
+        f'Network Topology: Substation {substation_id}  {title_suffix}\n'
         f'{len(topo_sub)} cables, {len(all_nodes)} nodes '
         f'({n_trans} transformer, {n_junct} junction cabinets, {n_endpt} endpoints) | '
         f'{len(conn_sub)} meters',
         fontsize=12, fontweight='bold')
-    ax.set_xlabel('X (ISN93)', fontsize=10)
-    ax.set_ylabel('Y (ISN93)', fontsize=10)
-    ax.set_aspect('equal')
-    ax.grid(True, alpha=0.3)
 
-    plt.tight_layout()
+    # --- Clean frame ---
+    ax.grid(False)
+    for spine in ax.spines.values():
+        spine.set_linewidth(0.5)
+        spine.set_color('#CCCCCC')
 
-    # Save
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    output_path = OUTPUT_DIR / "Jason_topology_map.png"
+
+# ---------------------------------------------------------------------------
+#  NetworkX graph + abstract layouts
+# ---------------------------------------------------------------------------
+
+def build_networkx_graph(edge_types):
+    """Build an undirected networkx Graph from the edge_types list."""
+    G = nx.Graph()
+    for n1, n2, etype, attrs in edge_types:
+        G.add_edge(n1, n2, edge_type=etype, **attrs)
+    return G
+
+
+def compute_tree_layout(G, node_types):
+    """
+    BFS from the transformer root, assigning y-levels by depth and
+    spreading children evenly on x.
+
+    Returns positions dict  {node_name: (x, y)}.
+    """
+    # Find root (transformer node)
+    root = None
+    for n, ntype in node_types.items():
+        if ntype == 'transformer' and n in G:
+            root = n
+            break
+    if root is None:
+        logger.warning("No transformer node found for tree layout — falling back to spring layout.")
+        return nx.spring_layout(G, seed=42)
+
+    # BFS to get depth levels
+    depths = {root: 0}
+    queue = deque([root])
+    visited = {root}
+    children_order = {}  # parent -> [child, ...]
+
+    while queue:
+        node = queue.popleft()
+        for neighbor in G.neighbors(node):
+            if neighbor not in visited:
+                visited.add(neighbor)
+                depths[neighbor] = depths[node] + 1
+                queue.append(neighbor)
+                children_order.setdefault(node, []).append(neighbor)
+
+    # Include any disconnected nodes at the bottom
+    max_depth = max(depths.values()) if depths else 0
+    for n in G.nodes():
+        if n not in depths:
+            max_depth += 1
+            depths[n] = max_depth
+
+    # Group nodes by depth level
+    levels = {}
+    for n, d in depths.items():
+        levels.setdefault(d, []).append(n)
+
+    # Sort nodes within each level for consistent ordering
+    for d in levels:
+        levels[d].sort()
+
+    # Assign positions: x spread evenly, y = -depth (top-down)
+    positions = {}
+    for d, nodes in levels.items():
+        n_nodes = len(nodes)
+        for i, node in enumerate(nodes):
+            x = (i + 0.5) / n_nodes  # normalise to [0, 1]
+            y = -d                    # root at top
+            positions[node] = (x, y)
+
+    return positions
+
+
+def compute_spring_layout(G, node_types):
+    """
+    Force-directed spring layout with the transformer pinned at centre.
+
+    Returns positions dict  {node_name: (x, y)}.
+    """
+    # Find transformer node to pin
+    fixed_nodes = []
+    init_pos = {}
+    for n, ntype in node_types.items():
+        if ntype == 'transformer' and n in G:
+            fixed_nodes.append(n)
+            init_pos[n] = (0.5, 0.5)
+
+    # Provide initial positions for all nodes so spring_layout starts smoothly
+    for n in G.nodes():
+        if n not in init_pos:
+            init_pos[n] = (np.random.uniform(0.1, 0.9), np.random.uniform(0.1, 0.9))
+
+    k = 1.8 / np.sqrt(max(G.number_of_nodes(), 1))  # spacing factor
+    positions = nx.spring_layout(
+        G,
+        pos=init_pos,
+        fixed=fixed_nodes if fixed_nodes else None,
+        k=k,
+        iterations=200,
+        seed=42,
+    )
+    return positions
+
+
+# ---------------------------------------------------------------------------
+#  Saving helper
+# ---------------------------------------------------------------------------
+
+def save_figure(fig, filename):
+    """Save figure to the per-substation results folder."""
+    output_dir = PROJECT_ROOT / "Powerflow" / "output" / "pf_results" / str(SUBSTATION_ID)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / filename
     fig.savefig(output_path, dpi=150, bbox_inches='tight')
-    logger.info(f"Saved topology map to {output_path}")
+    logger.info(f"Saved {output_path}")
     plt.close(fig)
 
-    # Print summary
+
+# ---------------------------------------------------------------------------
+#  Main
+# ---------------------------------------------------------------------------
+
+def main():
+    data = load_topology_data()
+    if data is None:
+        return
+
+    topo_sub = data['topo_sub']
+    conn_sub = data['conn_sub']
+    node_coords = data['node_coords']
+    node_types = data['node_types']
+    edge_types = data['edge_types']
+    all_nodes = data['all_nodes']
+
+    # Build networkx graph for abstract layouts
+    G = build_networkx_graph(edge_types)
+
+    # ---------------------------------------------------------------
+    # Plot 1: Geographic layout (existing behaviour)
+    # ---------------------------------------------------------------
+    fig1, ax1 = plt.subplots(1, 1, figsize=(18, 16), dpi=150)
+    draw_topology(ax1, node_coords, node_types, edge_types,
+                  SUBSTATION_ID, topo_sub, conn_sub, all_nodes,
+                  title_suffix="(Geographic)")
+    ax1.set_xlabel('X (ISN93)', fontsize=10)
+    ax1.set_ylabel('Y (ISN93)', fontsize=10)
+    ax1.set_aspect('equal')
+    save_figure(fig1, "Jason_topology_map.png")
+
+    # ---------------------------------------------------------------
+    # Plot 2: Tree / hierarchical layout
+    # ---------------------------------------------------------------
+    tree_pos = compute_tree_layout(G, node_types)
+    fig2, ax2 = plt.subplots(1, 1, figsize=(18, 12), dpi=150)
+    draw_topology(ax2, tree_pos, node_types, edge_types,
+                  SUBSTATION_ID, topo_sub, conn_sub, all_nodes,
+                  title_suffix="(Tree Layout)")
+    ax2.set_xticks([])
+    ax2.set_yticks([])
+    save_figure(fig2, "Jason_topology_tree.png")
+
+    # ---------------------------------------------------------------
+    # Plot 3: Force-directed spring layout
+    # ---------------------------------------------------------------
+    spring_pos = compute_spring_layout(G, node_types)
+    fig3, ax3 = plt.subplots(1, 1, figsize=(16, 16), dpi=150)
+    draw_topology(ax3, spring_pos, node_types, edge_types,
+                  SUBSTATION_ID, topo_sub, conn_sub, all_nodes,
+                  title_suffix="(Spring Layout)")
+    ax3.set_xticks([])
+    ax3.set_yticks([])
+    ax3.set_aspect('equal')
+    save_figure(fig3, "Jason_topology_spring.png")
+
+    # ---------------------------------------------------------------
+    # Summary
+    # ---------------------------------------------------------------
+    n_trans = sum(1 for v in node_types.values() if v == 'transformer')
+    n_junct = sum(1 for v in node_types.values() if v == 'junction_cabinet')
+    n_endpt = sum(1 for v in node_types.values() if v == 'meter_endpoint')
+
     logger.info(f"\nTopology Summary:")
     logger.info(f"  Transformers:        {n_trans}")
     logger.info(f"  Junction cabinets:   {n_junct}")
@@ -371,7 +555,7 @@ def main():
         count = sum(1 for _, _, et, _ in edge_types if et == etype)
         logger.info(f"  {etype.capitalize()} edges: {count}")
 
-    # Report missing coordinates
+    # Report missing coordinates (geographic plot only)
     missing = [n for n in all_nodes if n not in node_coords]
     if missing:
         logger.warning(f"\nNodes without coordinates ({len(missing)}):")
