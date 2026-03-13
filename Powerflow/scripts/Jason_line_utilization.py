@@ -49,6 +49,24 @@ SELECTED_SUBSTATIONS = ['1056', '1299', '1340', '1398', '1457', '579']
 
 
 # ---------------------------------------------------------------------------
+#  Display helpers
+# ---------------------------------------------------------------------------
+
+def rename_line_label(name):
+    """
+    Rename 'feederN' -> 'trunk N' for display purposes.
+
+    In the pandapower model, 'feeder' lines are the main trunk cables from
+    the transformer to junction cabinets.  The thesis reserves 'feeder' for
+    the LV distribution side, so we relabel to avoid confusion.
+    """
+    s = str(name)
+    if s.startswith('feeder'):
+        return 'trunk ' + s[len('feeder'):]
+    return s
+
+
+# ---------------------------------------------------------------------------
 #  Core computation functions
 # ---------------------------------------------------------------------------
 
@@ -207,7 +225,7 @@ def plot_top_lines_bar(summary, path, sub, top_n=15):
                         ha='center', fontsize=7, color='#D32F2F')
 
     ax.set_xticks(x)
-    ax.set_xticklabels(top.index, rotation=45, ha='right', fontsize=8)
+    ax.set_xticklabels([rename_line_label(l) for l in top.index], rotation=45, ha='right', fontsize=8)
     ax.set_ylabel('Line Utilization [%]')
     ax.set_title(f'Top-{top_n} Most Loaded Lines — Substation {sub}')
     ax.legend(loc='upper right', fontsize=8)
@@ -219,15 +237,32 @@ def plot_top_lines_bar(summary, path, sub, top_n=15):
     logger.info(f"  Saved top_lines_utilization.png")
 
 
-def plot_top_lines_timeseries(u_peak, u_balanced, summary, path, sub, top_n=5):
+def plot_top_lines_timeseries(u_peak, u_balanced, summary, path, sub,
+                              min_delta_pp=15, max_n=5, fallback_n=3):
     """
-    Multi-panel timeseries: U_peak(t) and U_balanced(t) for the top-N lines.
+    Multi-panel timeseries: U_peak(t) and U_balanced(t) for lines with
+    significant deferrable capacity (ΔU₉₉ > min_delta_pp).
+
+    Falls back to showing the top fallback_n lines if none exceed the threshold.
     Orange fill shows the deferrable capacity gap.
     """
-    top_lines = summary.head(top_n).index
+    # Select lines with significant deferral, or fall back to top-N
+    significant = summary[summary['delta_u_99'] * 100 > min_delta_pp]
+    if len(significant) == 0:
+        significant = summary.head(fallback_n)
+        logger.info(f"  No lines exceed {min_delta_pp} pp — showing top {fallback_n}")
+    else:
+        significant = significant.head(max_n)
 
-    fig, axes = plt.subplots(top_n, 1, figsize=(14, 3 * top_n), dpi=150, sharex=True)
-    if top_n == 1:
+    top_lines = significant.index
+    n_panels = len(top_lines)
+
+    if n_panels == 0:
+        logger.info("  Skipping timeseries plot — no lines to display")
+        return
+
+    fig, axes = plt.subplots(n_panels, 1, figsize=(14, 3 * n_panels), dpi=150, sharex=True)
+    if n_panels == 1:
         axes = [axes]
 
     for ax, line in zip(axes, top_lines):
@@ -241,24 +276,28 @@ def plot_top_lines_timeseries(u_peak, u_balanced, summary, path, sub, top_n=5):
                 alpha=0.8, label='$U_{balanced}$ (rebalanced)')
 
         ax.axhline(y=100, color='darkred', linestyle='-', alpha=0.5)
-        ax.set_ylabel(f'Line {line} [%]')
+        label = rename_line_label(line)
+        ax.set_ylabel(f'{label} [%]')
         ax.grid(True, alpha=0.3)
 
-        # Annotate I_lim
+        # Annotate I_lim and ΔU
         ilim = summary.loc[line, 'i_lim_a']
-        ax.text(0.98, 0.95, f'$I_{{lim}}$={ilim:.0f} A',
+        delta = summary.loc[line, 'delta_u_99'] * 100
+        ax.text(0.98, 0.95,
+                f'$I_{{lim}}$={ilim:.0f} A  |  $\\Delta U_{{99}}$={delta:.1f} pp',
                 transform=ax.transAxes, fontsize=8, ha='right', va='top',
                 bbox=dict(boxstyle='round,pad=0.2', facecolor='wheat', alpha=0.7))
 
         if ax == axes[0]:
             ax.legend(loc='upper left', fontsize=7)
 
-    axes[0].set_title(f'Line Utilization Timeseries — Substation {sub} (Top {top_n})')
+    threshold_note = f'$\\Delta U_{{99}}$ > {min_delta_pp} pp' if len(significant) > 0 else f'Top {fallback_n}'
+    axes[0].set_title(f'Line Utilization Timeseries — Substation {sub} ({threshold_note})')
     axes[-1].set_xlabel('Time')
     fig.tight_layout()
     fig.savefig(path / 'top_lines_timeseries.png', dpi=150, bbox_inches='tight')
     plt.close(fig)
-    logger.info(f"  Saved top_lines_timeseries.png")
+    logger.info(f"  Saved top_lines_timeseries.png ({n_panels} panels)")
 
 
 def plot_delta_u_distribution(summary, path, sub):
@@ -330,7 +369,7 @@ def plot_deferral_years(summary, path, sub, top_n=15):
                     va='center', fontsize=8, color='#1976D2', fontweight='bold')
 
     ax.set_yticks(y)
-    ax.set_yticklabels(valid.index, fontsize=8)
+    ax.set_yticklabels([rename_line_label(l) for l in valid.index], fontsize=8)
     ax.set_xlabel(f'Years to 100% Capacity (at {ANNUAL_GROWTH_RATE*100:.0f}% annual load growth)')
     ax.set_title(f'Reinforcement Timeline — Substation {sub}')
     ax.legend(loc='lower right', fontsize=8)
@@ -459,6 +498,56 @@ def plot_cross_sub_deferral(cross_df, path):
     logger.info("  Saved cross_substation_deferral.png")
 
 
+def plot_cross_sub_delta_u_distribution(all_summaries, path):
+    """
+    Combined histogram + CDF of delta_U_99 across all selected substations.
+
+    Shows aggregate totals only (no per-substation breakdown) for clarity.
+
+    Args:
+        all_summaries: dict {substation_id: summary DataFrame}
+        path: output directory (PF_RESULTS_DIR)
+    """
+    # Pool all lines from all substations
+    all_vals = []
+    for sub, summary in all_summaries.items():
+        vals = summary['delta_u_99'].dropna() * 100  # percentage points
+        all_vals.extend(vals.tolist())
+    all_vals = np.array(all_vals)
+    n_subs = len(all_summaries)
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5), dpi=150)
+
+    # Left: histogram
+    ax1.hist(all_vals, bins=30, color='#FF6B00', alpha=0.7,
+             edgecolor='black', linewidth=0.5)
+    median_val = np.median(all_vals)
+    ax1.axvline(median_val, color='red', linestyle='--', linewidth=1.5,
+                label=f'Median: {median_val:.1f} pp')
+    ax1.set_xlabel('Deferrable Capacity $\\Delta U_{99}$ [percentage points]')
+    ax1.set_ylabel('Number of Lines')
+    ax1.set_title(f'Distribution of Deferrable Capacity ({len(all_vals)} lines, {n_subs} substations)')
+    ax1.legend(fontsize=9)
+    ax1.grid(True, alpha=0.3)
+
+    # Right: CDF
+    sorted_v = np.sort(all_vals)
+    cdf = np.arange(1, len(sorted_v) + 1) / len(sorted_v)
+    ax2.plot(sorted_v, cdf, color='#1976D2', linewidth=2)
+    ax2.axvline(median_val, color='red', linestyle='--', linewidth=1,
+                alpha=0.5, label=f'Median: {median_val:.1f} pp')
+    ax2.set_xlabel('$\\Delta U_{99}$ [percentage points]')
+    ax2.set_ylabel('CDF (fraction of lines)')
+    ax2.set_title('CDF of Deferrable Capacity')
+    ax2.legend(fontsize=9)
+    ax2.grid(True, alpha=0.3)
+
+    fig.tight_layout()
+    fig.savefig(path / 'cross_substation_delta_u_distribution.png', dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    logger.info("  Saved cross_substation_delta_u_distribution.png")
+
+
 # ---------------------------------------------------------------------------
 #  Summary printing
 # ---------------------------------------------------------------------------
@@ -481,7 +570,7 @@ def _print_sub_summary(summary, sub):
         yr_b_str = f"{yr_b:>6.0f}y" if np.isfinite(yr_b) else f"{'∞':>7}"
         defer_str = f"+{defer:>4.0f}y" if np.isfinite(defer) else f"{'—':>6}"
         logger.info(
-            f"  {str(line):>12} {row['i_lim_a']:>6.0f}A "
+            f"  {rename_line_label(line):>12} {row['i_lim_a']:>6.0f}A "
             f"{row['u_peak_99']*100:>7.1f}% {row['u_balanced_99']*100:>7.1f}% "
             f"{row['delta_u_99']*100:>6.1f}pp "
             f"{row['share_above_50']*100:>5.1f}% {row['share_above_80']*100:>5.1f}% "
@@ -552,6 +641,7 @@ def main():
     logger.info(f"Substations to process: {substations}")
 
     cross_sub_rows = []
+    all_summaries = {}  # per-substation summary for cross-sub plots
 
     for sub in substations:
         logger.info(f"\n{'='*60}")
@@ -578,6 +668,8 @@ def main():
 
         # Step 3: Compute per-line summary
         summary = compute_line_summary(u_peak, u_balanced, delta_u, i_lim)
+
+        all_summaries[sub] = summary
 
         # Step 4: Save outputs
         out_path = sub_path / 'line_utilization'
@@ -624,6 +716,7 @@ def main():
         # Generate cross-substation plots
         plot_cross_sub_headroom(cross_df, PF_RESULTS_DIR)
         plot_cross_sub_deferral(cross_df, PF_RESULTS_DIR)
+        plot_cross_sub_delta_u_distribution(all_summaries, PF_RESULTS_DIR)
 
         # Save cross-substation summary
         cross_df.to_parquet(PF_RESULTS_DIR / 'cross_substation_line_utilization.parquet', index=False)
