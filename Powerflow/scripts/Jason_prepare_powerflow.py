@@ -46,15 +46,26 @@ SMARTMETER_FILE = None
 def load_sm_profiles(project_root):
     """
     Load SM profiles from the source parquet file in data/smartmeter/.
-    Returns dict of meter_id (str) -> DataFrame.
+    Returns (profiles, per_completed) where:
+        profiles: dict of meter_id (str) -> DataFrame
+        per_completed: float or None (coverage ratio from parquet)
     """
     parquet_file = project_root / "data" / "smartmeter" / SMARTMETER_FILE
     if not parquet_file.exists():
         logger.error(f"Source parquet not found: {parquet_file}")
-        return None
+        return None, None
 
     logger.info(f"Loading raw SM data from {parquet_file.name}")
     sm_df = pd.read_parquet(parquet_file)
+
+    # Extract per_completed before splitting into per-meter dicts
+    per_completed = None
+    if 'per_completed' in sm_df.columns:
+        pc_values = sm_df['per_completed'].dropna().unique()
+        if len(pc_values) == 1:
+            per_completed = float(pc_values[0])
+        elif len(pc_values) > 1:
+            logger.warning(f"Multiple per_completed values found: {pc_values}")
 
     # Convert to per-meter DataFrames using husveita_fastanumer (200 unique meters)
     sm_df['timestamp'] = pd.to_datetime(sm_df['ts'])
@@ -66,7 +77,39 @@ def load_sm_profiles(project_root):
         profiles[meter_id] = df
 
     logger.info(f"Loaded {len(profiles)} meter profiles from source")
-    return profiles
+    return profiles, per_completed
+
+
+def determine_coverage_ratio(per_completed_from_parquet, config_value):
+    """
+    Determine the coverage ratio for unmetered load scaling.
+
+    Priority: config override > per_completed from parquet > 1.0 (no scaling)
+
+    Args:
+        per_completed_from_parquet: float or None from the smart meter parquet
+        config_value: float or None from jason_config.yaml
+
+    Returns:
+        (coverage_ratio: float, source: str)
+    """
+    # 1. Config override
+    if config_value is not None:
+        cr = float(config_value)
+        if not (0.0 < cr <= 1.0):
+            raise ValueError(f"coverage_ratio must be in (0, 1], got {cr}")
+        return cr, "config override"
+
+    # 2. per_completed from parquet
+    if per_completed_from_parquet is not None:
+        cr = per_completed_from_parquet
+        if 0.0 < cr <= 1.0:
+            return cr, "parquet per_completed"
+        else:
+            logger.warning(f"per_completed={cr} out of range (0,1], defaulting to 1.0")
+
+    # 3. Fallback
+    return 1.0, "default (no scaling)"
 
 
 # ---------------------------------------------------------------------------
@@ -298,7 +341,7 @@ def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     # --- Load SM profiles ---
-    profiles = load_sm_profiles(PROJECT_ROOT)
+    profiles, per_completed = load_sm_profiles(PROJECT_ROOT)
     if not profiles:
         logger.error("No SM data available. Run Jason_data_adapter.py first.")
         return
@@ -325,6 +368,28 @@ def main():
         profiles, phase_assignment, is_3phase_map
     )
     logger.info(f"  Shape: {Pload_a.shape[0]} timesteps x {Pload_a.shape[1]} meters")
+
+    # --- Unmetered load compensation ---
+    coverage_ratio, cr_source = determine_coverage_ratio(
+        per_completed, cfg.get('coverage_ratio')
+    )
+    alpha = 1.0 / coverage_ratio
+
+    logger.info(f"\nUnmetered load compensation:")
+    logger.info(f"  Coverage ratio: {coverage_ratio:.4f} (source: {cr_source})")
+    logger.info(f"  Alpha (scaling factor): {alpha:.4f}")
+    logger.info(f"  Load increase: {(alpha - 1) * 100:.1f}%")
+
+    if alpha != 1.0:
+        Pload_a *= alpha
+        Pload_b *= alpha
+        Pload_c *= alpha
+        Qload_a *= alpha
+        Qload_b *= alpha
+        Qload_c *= alpha
+        logger.info(f"  Applied scaling to all 6 load matrices")
+    else:
+        logger.info(f"  No scaling applied (alpha=1.0)")
 
     # Total (backward-compatible)
     Pload = Pload_a.add(Pload_b, fill_value=0).add(Pload_c, fill_value=0)
@@ -397,6 +462,21 @@ def main():
     assignment_df = pd.DataFrame(assignment_rows)
     assignment_df.to_csv(OUTPUT_DIR / "meter_phase_assignment.csv", index=False)
     logger.info(f"  Saved meter_phase_assignment.csv ({len(assignment_df)} meters)")
+
+    # Save unmetered load compensation metadata
+    import json
+    metadata = {
+        'substation_id': SUBSTATION_ID,
+        'coverage_ratio': coverage_ratio,
+        'coverage_ratio_source': cr_source,
+        'alpha': round(alpha, 6),
+        'load_increase_pct': round((alpha - 1) * 100, 2),
+        'n_metered': Pload_a.shape[1],
+    }
+    meta_path = OUTPUT_DIR / "load_scaling_metadata.json"
+    with open(meta_path, 'w') as f:
+        json.dump(metadata, f, indent=2)
+    logger.info(f"  Saved {meta_path.name}")
 
     logger.info("\n" + "=" * 80)
     logger.info("Power flow input preparation complete (3-phase)!")

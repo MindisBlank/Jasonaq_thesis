@@ -1,13 +1,14 @@
 # Jason power flow configuration
 # To switch substations: change IDs and smartmeter_file
 
-IDs: ["579"]
+IDs: ["1457"]
 
 Jason_settings:
-  smartmeter_file: "smartmeter_15min__substation_0579_transformer_sp1_20250801_20250901.parquet"
+  smartmeter_file: "smartmeter_15min__substation_1457_transformer_sp1_20250801_20250901.parquet"
   default_service_fuse_size: 25
-  phase_ratio: [43, 40, 17]   # % of single-phase meters assigned to phase A, B, C
+  phase_ratio: [38, 41, 21]   # % of single-phase meters assigned to phase A, B, C
   phase_seed: 42               # fixed seed for reproducible phase assignment
+  coverage_ratio: null           # null = auto from parquet per_completed, or float e.g. 0.85
 
 # smartmeter_15min__substation_0670_transformer_sp1_20250801_20250901.parquet    38/32/30
 # smartmeter_15min__substation_1416_transformer_sp1_20250801_20250901.parquet     40/37/23

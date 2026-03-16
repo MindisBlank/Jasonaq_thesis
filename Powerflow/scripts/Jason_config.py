@@ -63,6 +63,7 @@ def load_config():
         'default_service_fuse_size': jason.get('default_service_fuse_size', 25),
         'phase_ratio': phase_ratio,
         'phase_seed': jason.get('phase_seed', 42),
+        'coverage_ratio': jason.get('coverage_ratio', None),
         'script_dir': SCRIPT_DIR,
         'project_root': PROJECT_ROOT,
         'topology_dir': topology_dir,
