@@ -2,17 +2,17 @@
 # List of device IDs to fetch (Integer list)
 # Corresponds to: --device-id
 device_ids:
-  - 375
+  - 234
 # The variable backend name to fetch (e.g., I_Effective, U_Effective)
 # Corresponds to: --variable
-variable_backend: "U_Effective"
+variable_backend: "I_Effective"#"U_Effective"
 # Specific phases/channels to filter by.
 # If null, it fetches all available channels for the variable.
 # Corresponds to: --phases
 phases:
-  - "L1"
-  - "L2"
-  - "L3"
+  - "Input01"
+  - "Input02"
+  - "Input03"
 # -----------------------------------------------------------------------------
 # Time Settings
 # -----------------------------------------------------------------------------

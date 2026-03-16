@@ -1,23 +1,38 @@
 # Jason power flow configuration
-# To switch substations: change IDs and smartmeter_file
+# List substations to run. Pipeline processes each one consecutively.
 
-IDs: ["1457"]
+IDs: ["1056","1299","1340","1398","1457","579"]
 
-Jason_settings:
-  smartmeter_file: "smartmeter_15min__substation_1457_transformer_sp1_20250801_20250901.parquet"
+defaults:
+  phase_seed: 42
   default_service_fuse_size: 25
-  phase_ratio: [38, 41, 21]   # % of single-phase meters assigned to phase A, B, C
-  phase_seed: 42               # fixed seed for reproducible phase assignment
-  coverage_ratio: null           # null = auto from parquet per_completed, or float e.g. 0.85
+  coverage_ratio: null       # null = auto from parquet per_completed
+  transformer: 1             # transformer number (sp1)
+  date_range: "20250801_20250901"
 
-# smartmeter_15min__substation_0670_transformer_sp1_20250801_20250901.parquet    38/32/30
-# smartmeter_15min__substation_1416_transformer_sp1_20250801_20250901.parquet     40/37/23
-# smartmeter_15min__substation_1354_transformer_sp2_20250801_20250901.parquet
-# smartmeter_15min__substation_1299_transformer_sp1_20250801_20250901.parquet 
-# smartmeter_15min__substation_1248_transformer_sp1_20250801_20250901.parquet    
-# smartmeter_15min__substation_1398_transformer_sp1_20250801_20250901.parquet   49/48/3 # seems to be missing a string in the topology map
-# smartmeter_15min__substation_0579_transformer_sp1_20250801_20250901.parquet   43/40/17
-# smartmeter_15min__substation_1456_transformer_sp1_20250801_20250901.parquet # something wrong with topology power flow skips since it say no loads on transformer   phase_ratio: [45, 28, 27]
-# smartmeter_15min__substation_1056_transformer_sp1_20250801_20250901.parquet  33/20/47
-# smartmeter_15min__substation_1457_transformer_sp1_20250801_20250901.parquet  38/41/21
-# smartmeter_15min__substation_1340_transformer_sp1_20250801_20250901.parquet 42/36/22
+substations:
+  579:
+    phase_ratio: [43, 40, 17]
+  670:
+    phase_ratio: [38, 32, 30]
+  1056:
+    phase_ratio: [33, 20, 47]
+  1299:
+    phase_ratio: [90, 5, 5]
+  1248:
+    phase_ratio: [38, 31, 30]
+  1340:
+    phase_ratio: [42, 36, 22]
+  1354:
+    phase_ratio: [37, 32, 31]
+    transformer: 2              # only substation using sp2
+  1398:
+    phase_ratio: [49, 48, 3]
+  1416:
+    phase_ratio: [40, 37, 23]
+  1456:
+    phase_ratio: [45, 28, 27]
+  1457:
+    phase_ratio: [38, 41, 21]
+
+

@@ -323,10 +323,12 @@ def main():
     parser = argparse.ArgumentParser(description='Prepare power flow input files (3-phase)')
     parser.add_argument('--use-raw', action='store_true', default=True,
                         help='Kept for backward compatibility (always uses source data)')
+    parser.add_argument('--substation', type=str, default=None,
+                        help='Substation ID (overrides config IDs[0])')
     args = parser.parse_args()
 
     # --- Load config ---
-    cfg = load_config()
+    cfg = load_config(args.substation)
     global SUBSTATION_ID, LV_FEEDER_ID, SMARTMETER_FILE
     SUBSTATION_ID = cfg['substation_id']
     LV_FEEDER_ID = cfg['lv_feeder_id']

@@ -372,7 +372,7 @@ def plot_deferral_years(summary, path, sub, top_n=15):
     ax.set_yticklabels([rename_line_label(l) for l in valid.index], fontsize=8)
     ax.set_xlabel(f'Years to 100% Capacity (at {ANNUAL_GROWTH_RATE*100:.0f}% annual load growth)')
     ax.set_title(f'Reinforcement Timeline — Substation {sub}')
-    ax.legend(loc='lower right', fontsize=8)
+    ax.legend(loc='upper right', fontsize=8)
     ax.grid(True, axis='x', alpha=0.3)
     ax.invert_yaxis()  # most critical line at top
 

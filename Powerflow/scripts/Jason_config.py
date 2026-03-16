@@ -6,7 +6,7 @@ Shared configuration loader for all Jason_ scripts.
 Reads jason_config.yaml and provides a single dict with all
 substation-specific settings. To switch substations, edit:
   - IDs in jason_config.yaml
-  - smartmeter_file in Jason_settings
+  - Per-substation overrides in the 'substations' section
 """
 
 import yaml
@@ -33,37 +33,71 @@ def _derive_topology_dir(smartmeter_file, project_root):
     return project_root / "notebooks" / "data_exports" / folder_name
 
 
-def load_config():
+def load_substation_ids():
+    """Return list of substation IDs (as strings) from config."""
+    with open(CONFIG_PATH) as f:
+        cfg = yaml.safe_load(f)
+    return [str(x) for x in cfg.get('IDs', [])]
+
+
+def load_config(substation_id=None):
     """
-    Load configuration from jason_config.yaml.
+    Load configuration for a specific substation.
+
+    Args:
+        substation_id: int or str. If None, uses first entry in IDs list.
 
     Returns dict with keys:
         substation_id (int), lv_feeder_id (str), smartmeter_file (str),
         default_service_fuse_size (int/float), phase_ratio (list), phase_seed (int),
+        coverage_ratio (float or None),
         script_dir (Path), project_root (Path), topology_dir (Path),
         smartmeter_dir (Path), output_dir (Path)
     """
     with open(CONFIG_PATH) as f:
         cfg = yaml.safe_load(f)
 
-    substation_id = int(cfg['IDs'][0])
-    jason = cfg.get('Jason_settings', {})
+    # --- Resolve substation ID ---
+    if substation_id is None:
+        substation_id = int(cfg['IDs'][0])
+    else:
+        substation_id = int(substation_id)
 
-    phase_ratio = jason.get('phase_ratio', [40, 30, 30])
+    # --- Merge defaults + per-substation overrides ---
+    defaults = cfg.get('defaults', {})
+    sub_overrides = cfg.get('substations', {}).get(substation_id, {})
+
+    def _get(key, fallback=None):
+        """Per-substation value > defaults > fallback."""
+        if key in sub_overrides:
+            return sub_overrides[key]
+        if key in defaults:
+            return defaults[key]
+        return fallback
+
+    phase_ratio = _get('phase_ratio', [40, 30, 30])
     if len(phase_ratio) != 3 or abs(sum(phase_ratio) - 100) > 0.01:
         raise ValueError(f"phase_ratio must be 3 values summing to 100, got {phase_ratio}")
 
-    smartmeter_file = jason.get('smartmeter_file', '')
+    transformer = _get('transformer', 1)
+    date_range = _get('date_range', '20250801_20250901')
+
+    # Auto-derive smartmeter filename
+    smartmeter_file = (
+        f"smartmeter_15min__substation_{substation_id:04d}"
+        f"_transformer_sp{transformer}_{date_range}.parquet"
+    )
+
     topology_dir = _derive_topology_dir(smartmeter_file, PROJECT_ROOT)
 
     return {
         'substation_id': substation_id,
         'lv_feeder_id': str(substation_id),
         'smartmeter_file': smartmeter_file,
-        'default_service_fuse_size': jason.get('default_service_fuse_size', 25),
+        'default_service_fuse_size': _get('default_service_fuse_size', 25),
         'phase_ratio': phase_ratio,
-        'phase_seed': jason.get('phase_seed', 42),
-        'coverage_ratio': jason.get('coverage_ratio', None),
+        'phase_seed': _get('phase_seed', 42),
+        'coverage_ratio': _get('coverage_ratio', None),
         'script_dir': SCRIPT_DIR,
         'project_root': PROJECT_ROOT,
         'topology_dir': topology_dir,

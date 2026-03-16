@@ -19,6 +19,7 @@ Usage:
     python Jason_visualize_topology.py
 """
 
+import argparse
 import pandas as pd
 import numpy as np
 import matplotlib
@@ -161,7 +162,7 @@ def resolve_node_coord(node_name, raw_coords):
 #  Data loading & classification
 # ---------------------------------------------------------------------------
 
-def load_topology_data():
+def load_topology_data(substation_id=None):
     """
     Load config, topology CSVs, raw ArcGIS data.  Classify nodes and edges.
 
@@ -171,7 +172,7 @@ def load_topology_data():
         cfg, topo_sub, conn_sub, node_coords, node_types,
         edge_types, all_nodes, cabinet_tenginr
     """
-    cfg = load_config()
+    cfg = load_config(substation_id)
     global SUBSTATION_ID
     SUBSTATION_ID = cfg['substation_id']
 
@@ -487,7 +488,12 @@ def save_figure(fig, filename):
 # ---------------------------------------------------------------------------
 
 def main():
-    data = load_topology_data()
+    parser = argparse.ArgumentParser(description='Visualize LV topology')
+    parser.add_argument('--substation', type=str, default=None,
+                        help='Substation ID (overrides config IDs[0])')
+    args = parser.parse_args()
+
+    data = load_topology_data(substation_id=args.substation)
     if data is None:
         return
 

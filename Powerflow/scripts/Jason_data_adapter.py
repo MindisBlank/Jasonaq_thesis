@@ -364,10 +364,12 @@ def fuse_size_for_transformer(kva):
 def main():
     parser = argparse.ArgumentParser(description='Translate Jason ArcGIS data to power flow format')
     parser.add_argument('--dry-run', action='store_true', help='Preview output without writing files')
+    parser.add_argument('--substation', type=str, default=None,
+                        help='Substation ID (overrides config IDs[0])')
     args = parser.parse_args()
 
     # --- Load config ---
-    cfg = load_config()
+    cfg = load_config(args.substation)
     global SUBSTATION_ID, LV_FEEDER_ID, DEFAULT_SERVICE_FUSE_SIZE
     SUBSTATION_ID = cfg['substation_id']
     LV_FEEDER_ID = cfg['lv_feeder_id']
