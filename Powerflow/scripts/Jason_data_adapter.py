@@ -37,11 +37,14 @@ DEFAULT_SERVICE_FUSE_SIZE = None
 # Cable R/X lookup (Ohm/km) from IEC 60228 at 20°C, underground XLPE at 50Hz
 CABLE_PROPERTIES = {
     # (size_mm2, material): (R_ohm_per_km, X_ohm_per_km, capacity_A)
+    (2.5, 'Cu'): (7.41, 0.110, 30),
     (10, 'Cu'):  (1.830, 0.094, 73),
     (16, 'Cu'):  (1.150, 0.087, 98),
     (25, 'Cu'):  (0.727, 0.083, 129),
     (35, 'Cu'):  (0.524, 0.081, 152),
     (50, 'Cu'):  (0.387, 0.079, 179),
+    (300, 'Cu'): (0.0601, 0.069, 530),
+    (25, 'Al'):  (1.200, 0.088, 96),    
     (50, 'Al'):  (0.641, 0.078, 137),
     (70, 'Al'):  (0.443, 0.075, 169),
     (95, 'Al'):  (0.320, 0.072, 201),
@@ -72,9 +75,9 @@ def parse_gerd_decoded(gerd_decoded: str):
     if pd.isna(gerd_decoded) or not isinstance(gerd_decoded, str):
         return 50, 'Al'  # Default fallback
 
-    match = re.search(r'(\d+)\s*x\s*(\d+)\s*(Al|Cu)', gerd_decoded, re.IGNORECASE)
+    match = re.search(r'(\d+)\s*x\s*(\d+(?:,\d+)?)\s*(Al|Cu)', gerd_decoded, re.IGNORECASE)
     if match:
-        size = int(match.group(2))
+        size = float(match.group(2).replace(',', '.'))
         material = match.group(3).capitalize()
         # Normalize: 'al' -> 'Al', 'cu' -> 'Cu'
         if material.lower() == 'al':

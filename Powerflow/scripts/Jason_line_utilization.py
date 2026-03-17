@@ -227,7 +227,7 @@ def plot_top_lines_bar(summary, path, sub, top_n=15):
     ax.set_xticks(x)
     ax.set_xticklabels([rename_line_label(l) for l in top.index], rotation=45, ha='right', fontsize=8)
     ax.set_ylabel('Line Utilization [%]')
-    ax.set_title(f'Top-{top_n} Most Loaded Lines — Substation {sub}')
+    ax.set_title(f'Top-{len(top)} Most Loaded Lines — Substation {sub}')
     ax.legend(loc='upper right', fontsize=8)
     ax.grid(True, axis='y', alpha=0.3)
 
