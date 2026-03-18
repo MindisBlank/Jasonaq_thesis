@@ -46,7 +46,7 @@ OUTPUT_DIR = PF_RESULTS_DIR / "customer_imbalance"
 # ---------------------------------------------------------------------------
 #  Target substations and their smart meter files
 # ---------------------------------------------------------------------------
-SELECTED_SUBSTATIONS = ['579', '1056', '1299', '1340', '1398', '1457']
+SELECTED_SUBSTATIONS = ['579', '1056', '1299', '1340', '1456', '1457']
 
 SMARTMETER_FILES = {
     '579':  'smartmeter_15min__substation_0579_transformer_sp1_20250801_20250901.parquet',

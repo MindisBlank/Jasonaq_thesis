@@ -36,7 +36,7 @@ PF_RESULTS_DIR = PROJECT_ROOT / "Powerflow" / "output" / "pf_results"
 
 # Only include these substations in the cross-substation comparison
 # Set to None to include all substations with results
-SELECTED_SUBSTATIONS = ['1299', '1398', '1056', '579', '1457', '1340']
+SELECTED_SUBSTATIONS = ['1299', '1456', '1056', '579', '1457', '1340']
 
 
 def load_loss_data(sub_path, run_label):

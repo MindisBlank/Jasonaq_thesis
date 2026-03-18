@@ -45,7 +45,7 @@ ANNUAL_GROWTH_RATE = 0.02  # 2% per year
 
 # Only include these substations in the cross-substation comparison
 # Set to None to include all substations with results
-SELECTED_SUBSTATIONS = ['1056', '1299', '1340', '1398', '1457', '579']
+SELECTED_SUBSTATIONS = ['1056', '1299', '1340', '1456', '1457', '579']
 
 
 # ---------------------------------------------------------------------------
