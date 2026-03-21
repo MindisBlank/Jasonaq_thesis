@@ -199,9 +199,6 @@ def run_powerflow_loop(net, ts_index, Ploads_run, Qloads_run, Pgens_sub, Qgens_s
     loss_lines_phase = pd.DataFrame(columns=line_keys, index=ts_index, dtype=float)
     loss_lines_neutral = pd.DataFrame(columns=line_keys, index=ts_index, dtype=float)
 
-    # Transformer losses
-    loss_trafo = pd.DataFrame(columns=['copper_loss_kw', 'iron_loss_kw'], index=ts_index, dtype=float)
-
     # --- Time-series power flow loop ---
     logger.info(f"\nRunning 3-phase power flow [{run_label}] for {n_steps} timesteps...")
     start_time = time.time()
@@ -338,16 +335,6 @@ def run_powerflow_loop(net, ts_index, Ploads_run, Qloads_run, Pgens_sub, Qgens_s
         elif len(net.res_trafo) > 0:
             trafo_3ph.loc[ts, 'loading_percent'] = net.res_trafo.loc[0, 'loading_percent']
 
-        # Transformer losses (copper = load-dependent, iron = no-load/core)
-        if hasattr(net, 'res_trafo_3ph') and len(net.res_trafo_3ph) > 0:
-            tr = net.res_trafo_3ph.loc[0]
-            loss_trafo.loc[ts, 'copper_loss_kw'] = tr['pl_mw'] * 1000 if 'pl_mw' in tr.index else 0
-            loss_trafo.loc[ts, 'iron_loss_kw'] = tr['pfe_mw'] * 1000 if 'pfe_mw' in tr.index else 0
-        elif len(net.res_trafo) > 0:
-            tr = net.res_trafo.loc[0]
-            loss_trafo.loc[ts, 'copper_loss_kw'] = tr['pl_mw'] * 1000 if 'pl_mw' in tr.index else 0
-            loss_trafo.loc[ts, 'iron_loss_kw'] = tr['pfe_mw'] * 1000 if 'pfe_mw' in tr.index else 0
-
         # Line losses (I²R)
         phase_loss, neutral_loss = compute_line_losses(net, line_indices)
         loss_lines_phase.loc[ts, :] = phase_loss
@@ -377,7 +364,6 @@ def run_powerflow_loop(net, ts_index, Ploads_run, Qloads_run, Pgens_sub, Qgens_s
     trafo_3ph.to_parquet(result_path / 'trafo_3ph.parquet')
     loss_lines_phase.to_parquet(result_path / 'loss_lines_phase.parquet')
     loss_lines_neutral.to_parquet(result_path / 'loss_lines_neutral.parquet')
-    loss_trafo.to_parquet(result_path / 'loss_trafo.parquet')
 
     # ---- Generate plots ----
     logger.info(f"\nGenerating [{run_label}] plots...")
@@ -578,7 +564,7 @@ def main():
             vn_lv_kv=V_LV,
             vkr_percent=0.7,
             vk_percent=6,
-            pfe_kw=0.45,
+            pfe_kw=0,
             i0_percent=0.2,
             vector_group=vector_group,
             vk0_percent=6,

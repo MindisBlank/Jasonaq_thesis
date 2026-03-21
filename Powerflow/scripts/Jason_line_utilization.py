@@ -11,6 +11,7 @@ pf_results/{sub}/unbalanced/ to compute:
   - Balanced util.     U_balanced(l,t) = (I_a + I_b + I_c) / (3 * I_lim)
   - Deferrable capacity delta_U(l,t) = U_peak - U_balanced
   - Summary statistics (99th percentile, share above threshold, etc.)
+  - Deferral years under multiple load growth scenarios
 
 Outputs saved to pf_results/{sub}/line_utilization/:
   - line_utilization_summary.parquet
@@ -20,6 +21,7 @@ Outputs saved to pf_results/{sub}/line_utilization/:
   - top_lines_utilization.png
   - top_lines_timeseries.png
   - delta_u_distribution.png
+  - deferral_years.png
 
 Usage:
     python Jason_line_utilization.py
@@ -40,12 +42,29 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent.parent
 PF_RESULTS_DIR = PROJECT_ROOT / "Powerflow" / "output" / "pf_results"
 
-# Load growth assumption for reinforcement deferral analysis
-ANNUAL_GROWTH_RATE = 0.02  # 2% per year
-
 # Only include these substations in the cross-substation comparison
 # Set to None to include all substations with results
 SELECTED_SUBSTATIONS = ['1056', '1299', '1340', '1456', '1457', '579']
+
+# Growth rates loaded from config in main(); module-level default as fallback
+DEFAULT_GROWTH_RATES = [0.034, 0.039]
+
+# Global font size bump
+plt.rcParams.update({'font.size': 11, 'axes.titlesize': 13, 'axes.labelsize': 12,
+                     'xtick.labelsize': 10, 'ytick.labelsize': 10, 'legend.fontsize': 9})
+
+
+def _load_trafo_labels():
+    """Load transformer labels from config, with fallback."""
+    try:
+        from Jason_config import load_transformer_labels
+        return load_transformer_labels()
+    except Exception:
+        return {}
+
+def _sub_label(sub, trafo_labels):
+    """Return display label like '579 SP1' for a substation ID."""
+    return trafo_labels.get(str(sub), f'{sub} SP1')
 
 
 # ---------------------------------------------------------------------------
@@ -64,6 +83,11 @@ def rename_line_label(name):
     if s.startswith('feeder'):
         return 'trunk ' + s[len('feeder'):]
     return s
+
+
+def _growth_label(g):
+    """Return a short human-readable label for a growth rate, e.g. '3.4%'."""
+    return f'{g*100:.1f}%'
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +158,7 @@ def compute_utilization_timeseries(i_a, i_b, i_c, i_lim):
     return u_peak, u_balanced, delta_u
 
 
-def compute_line_summary(u_peak, u_balanced, delta_u, i_lim):
+def compute_line_summary(u_peak, u_balanced, delta_u, i_lim, growth_rates=None):
     """
     Compute per-line summary metrics.
 
@@ -142,8 +166,13 @@ def compute_line_summary(u_peak, u_balanced, delta_u, i_lim):
         i_lim_a, u_peak_max, u_peak_99, u_peak_mean,
         u_balanced_max, u_balanced_99, u_balanced_mean,
         delta_u_max, delta_u_99, delta_u_mean,
-        share_above_50, share_above_80, share_above_100
+        share_above_50, share_above_80, share_above_100,
+        years_to_100_unbal_g{pct}, years_to_100_bal_g{pct}, deferral_years_g{pct}
+          for each growth rate
     """
+    if growth_rates is None:
+        growth_rates = DEFAULT_GROWTH_RATES
+
     n_timesteps = len(u_peak)
 
     summary = pd.DataFrame(index=u_peak.columns)
@@ -171,21 +200,24 @@ def compute_line_summary(u_peak, u_balanced, delta_u, i_lim):
     summary['share_above_80'] = (u_peak > 0.8).sum() / n_timesteps
     summary['share_above_100'] = (u_peak > 1.0).sum() / n_timesteps
 
-    # Years to 100% threshold under assumed load growth
+    # Years to 100% threshold under each growth scenario
     # t_τ = ln(τ / U) / ln(1 + g)  — only meaningful when U < τ
-    g = ANNUAL_GROWTH_RATE
     tau = 1.0  # 100% capacity threshold
 
-    for label, u_col in [('unbal', 'u_peak_99'), ('bal', 'u_balanced_99')]:
-        u = summary[u_col]
-        years = np.where(
-            u >= tau,
-            0.0,                                       # already above threshold
-            np.where(u > 0, np.log(tau / u) / np.log(1 + g), np.nan)
-        )
-        summary[f'years_to_100_{label}'] = years
+    for g in growth_rates:
+        pct = int(round(g * 100))
+        for label, u_col in [('unbal', 'u_peak_99'), ('bal', 'u_balanced_99')]:
+            u = summary[u_col]
+            years = np.where(
+                u >= tau,
+                0.0,                                       # already above threshold
+                np.where(u > 0, np.log(tau / u) / np.log(1 + g), np.nan)
+            )
+            summary[f'years_to_100_{label}_g{pct}'] = years
 
-    summary['deferral_years'] = summary['years_to_100_bal'] - summary['years_to_100_unbal']
+        summary[f'deferral_years_g{pct}'] = (
+            summary[f'years_to_100_bal_g{pct}'] - summary[f'years_to_100_unbal_g{pct}']
+        )
 
     return summary.sort_values('u_peak_99', ascending=False)
 
@@ -194,7 +226,7 @@ def compute_line_summary(u_peak, u_balanced, delta_u, i_lim):
 #  Plotting functions
 # ---------------------------------------------------------------------------
 
-def plot_top_lines_bar(summary, path, sub, top_n=15):
+def plot_top_lines_bar(summary, path, sub_label, top_n=15):
     """
     Side-by-side bar chart: U_peak_99 vs U_balanced_99 for the top-N lines.
     The gap represents deferrable capacity from rebalancing.
@@ -227,7 +259,7 @@ def plot_top_lines_bar(summary, path, sub, top_n=15):
     ax.set_xticks(x)
     ax.set_xticklabels([rename_line_label(l) for l in top.index], rotation=45, ha='right', fontsize=8)
     ax.set_ylabel('Line Utilization [%]')
-    ax.set_title(f'Top-{len(top)} Most Loaded Lines — Substation {sub}')
+    ax.set_title(f'Top-{len(top)} Most Loaded Lines — LV Transformer {sub_label}')
     ax.legend(loc='upper right', fontsize=8)
     ax.grid(True, axis='y', alpha=0.3)
 
@@ -237,7 +269,7 @@ def plot_top_lines_bar(summary, path, sub, top_n=15):
     logger.info(f"  Saved top_lines_utilization.png")
 
 
-def plot_top_lines_timeseries(u_peak, u_balanced, summary, path, sub,
+def plot_top_lines_timeseries(u_peak, u_balanced, summary, path, sub_label,
                               min_delta_pp=15, max_n=5, fallback_n=3):
     """
     Multi-panel timeseries: U_peak(t) and U_balanced(t) for lines with
@@ -292,7 +324,7 @@ def plot_top_lines_timeseries(u_peak, u_balanced, summary, path, sub,
             ax.legend(loc='upper left', fontsize=7)
 
     threshold_note = f'$\\Delta U_{{99}}$ > {min_delta_pp} pp' if len(significant) > 0 else f'Top {fallback_n}'
-    axes[0].set_title(f'Line Utilization Timeseries — Substation {sub} ({threshold_note})')
+    axes[0].set_title(f'Line Utilization Timeseries — LV Transformer {sub_label} ({threshold_note})')
     axes[-1].set_xlabel('Time')
     fig.tight_layout()
     fig.savefig(path / 'top_lines_timeseries.png', dpi=150, bbox_inches='tight')
@@ -300,7 +332,7 @@ def plot_top_lines_timeseries(u_peak, u_balanced, summary, path, sub,
     logger.info(f"  Saved top_lines_timeseries.png ({n_panels} panels)")
 
 
-def plot_delta_u_distribution(summary, path, sub):
+def plot_delta_u_distribution(summary, path, sub_label):
     """
     Histogram + CDF of delta_U_99 across all lines.
     Shows how much capacity could be freed by rebalancing.
@@ -315,7 +347,7 @@ def plot_delta_u_distribution(summary, path, sub):
                 label=f'Median: {delta_99.median():.1f} pp')
     ax1.set_xlabel('Deferrable Capacity $\\Delta U_{99}$ [percentage points]')
     ax1.set_ylabel('Number of Lines')
-    ax1.set_title(f'Distribution of Deferrable Capacity — Sub {sub}')
+    ax1.set_title(f'Distribution of Deferrable Capacity — LV Transformer {sub_label}')
     ax1.legend()
     ax1.grid(True, alpha=0.3)
 
@@ -325,7 +357,7 @@ def plot_delta_u_distribution(summary, path, sub):
     ax2.plot(sorted_vals, cdf, color='#1976D2', linewidth=2)
     ax2.set_xlabel('$\\Delta U_{99}$ [percentage points]')
     ax2.set_ylabel('CDF (fraction of lines)')
-    ax2.set_title(f'CDF of Deferrable Capacity — Sub {sub}')
+    ax2.set_title(f'CDF of Deferrable Capacity — LV Transformer {sub_label}')
     ax2.grid(True, alpha=0.3)
 
     fig.tight_layout()
@@ -334,61 +366,109 @@ def plot_delta_u_distribution(summary, path, sub):
     logger.info(f"  Saved delta_u_distribution.png")
 
 
-def plot_deferral_years(summary, path, sub, top_n=15):
+def plot_deferral_years(summary, path, sub_label, growth_rates=None):
     """
-    Horizontal bar chart showing years until 100% capacity for each line,
-    comparing unbalanced (U_peak) vs balanced (U_balanced) under assumed
-    annual load growth.  The gap = years of reinforcement deferral.
+    Stacked horizontal bar chart — for each line and growth scenario:
+      dark segment  = years to 100 % under current (unbalanced) loading
+      light segment = extra years gained by rebalancing (deferral)
+    Three grouped rows per line (one per growth scenario).
 
-    Lines already above 100% show 0 years (need reinforcement now).
+    Line selection: lines where the medium growth scenario reaches 100 %
+    within 50 years.  Fallback: top 5 lines by peak loading.
     """
-    # Only include lines that have finite years (exclude near-zero-load lines)
-    valid = summary.dropna(subset=['years_to_100_unbal', 'years_to_100_bal'])
-    # Sort by unbalanced years (shortest time to threshold first = most critical)
-    valid = valid.sort_values('years_to_100_unbal', ascending=True).head(top_n)
+    if growth_rates is None:
+        growth_rates = DEFAULT_GROWTH_RATES
+
+    n_scenarios = len(growth_rates)
+
+    # Use base (first) growth scenario for line selection
+    g_base = growth_rates[0]
+    pct_base = int(round(g_base * 100))
+    unbal_base = f'years_to_100_unbal_g{pct_base}'
+
+    # Primary: lines that hit 100 % within 50 years at base growth
+    mask = summary[unbal_base].notna() & (summary[unbal_base] <= 50)
+    valid = summary.loc[mask].sort_values(unbal_base, ascending=True).head(15)
+
+    # Fallback: top 5 most loaded lines
+    if len(valid) == 0:
+        valid = summary.sort_values('u_peak_99', ascending=False).head(5)
+        logger.info(f"  Deferral plot: no lines reach 100 % within 50 yr "
+                    f"at {pct_base} %/yr — showing top 5 by loading")
 
     if len(valid) == 0:
-        logger.info(f"  Skipping deferral plot — no lines with finite years to threshold")
+        logger.info(f"  Skipping deferral plot — no lines available")
         return
 
-    fig, ax = plt.subplots(figsize=(12, max(5, 0.5 * len(valid))), dpi=150)
+    # Colours: base (dark) + deferral (light) per scenario
+    base_colours   = ['#0D47A1', '#E65100', '#B71C1C']   # dark blue / dark orange / dark red
+    defer_colours  = ['#64B5F6', '#FFB74D', '#EF9A9A']   # light blue / light orange / light red
+    scenario_labels_done = set()
+
     y = np.arange(len(valid))
-    height = 0.35
+    total_height = 0.82
+    bar_h = total_height / n_scenarios
 
-    bars_unbal = ax.barh(y + height / 2, valid['years_to_100_unbal'], height,
-                          color='#D32F2F', alpha=0.8, label='Unbalanced ($U_{peak,99}$)')
-    bars_bal = ax.barh(y - height / 2, valid['years_to_100_bal'], height,
-                        color='#1976D2', alpha=0.8, label='Rebalanced ($U_{balanced,99}$)')
+    fig, ax = plt.subplots(figsize=(11, max(4, 0.6 * len(valid))), dpi=150)
 
-    # Annotate deferral years
-    for i, (idx, row) in enumerate(valid.iterrows()):
-        defer = row['deferral_years']
-        if defer > 0.5:
-            x_pos = max(row['years_to_100_unbal'], row['years_to_100_bal'])
-            ax.text(x_pos + 0.5, i, f'+{defer:.0f} yr',
-                    va='center', fontsize=8, color='#1976D2', fontweight='bold')
+    max_end = 0
+    for j, g in enumerate(growth_rates):
+        pct = int(round(g * 100))
+        unbal_col = f'years_to_100_unbal_g{pct}'
+        defer_col = f'deferral_years_g{pct}'
+        offsets = y - total_height / 2 + bar_h * (j + 0.5)
+
+        base_vals  = valid[unbal_col].fillna(0).values
+        defer_vals = valid[defer_col].fillna(0).values
+
+        bc = base_colours[j % len(base_colours)]
+        dc = defer_colours[j % len(defer_colours)]
+        glabel = f'{_growth_label(g)}'
+
+        # Base: years to capacity under unbalanced loading
+        ax.barh(offsets, base_vals, bar_h * 0.88,
+                color=bc, alpha=0.9, edgecolor='black', linewidth=0.3,
+                label=f'{glabel} — unbalanced' if j not in scenario_labels_done else None)
+
+        # Stacked: deferral gained by rebalancing
+        ax.barh(offsets, defer_vals, bar_h * 0.88, left=base_vals,
+                color=dc, alpha=0.85, edgecolor='black', linewidth=0.3,
+                label=f'{glabel} — deferral' if j not in scenario_labels_done else None)
+        scenario_labels_done.add(j)
+
+        # Annotate deferral at end of stacked bar
+        for i in range(len(valid)):
+            end = base_vals[i] + defer_vals[i]
+            if defer_vals[i] > 0.5:
+                ax.text(end + 0.3, offsets[i], f'+{defer_vals[i]:.0f} yr',
+                        va='center', fontsize=8, fontweight='bold', color=bc)
+            max_end = max(max_end, end)
 
     ax.set_yticks(y)
-    ax.set_yticklabels([rename_line_label(l) for l in valid.index], fontsize=8)
-    ax.set_xlabel(f'Years to 100% Capacity (at {ANNUAL_GROWTH_RATE*100:.0f}% annual load growth)')
-    ax.set_title(f'Reinforcement Timeline — Substation {sub}')
-    ax.legend(loc='upper right', fontsize=8)
+    ax.set_yticklabels([rename_line_label(l) for l in valid.index])
+    ax.set_xlabel('Years to 100 % Capacity')
+    ax.set_title(f'Reinforcement Timeline — LV Transformer {sub_label}',
+                 fontsize=13, fontweight='bold')
+    ax.legend(loc='upper right', fontsize=8, ncol=2)
     ax.grid(True, axis='x', alpha=0.3)
-    ax.invert_yaxis()  # most critical line at top
+    ax.invert_yaxis()
+
+    if np.isfinite(max_end) and max_end > 0:
+        ax.set_xlim(right=max_end * 1.2)
 
     fig.tight_layout()
     fig.savefig(path / 'deferral_years.png', dpi=150, bbox_inches='tight')
     plt.close(fig)
-    logger.info(f"  Saved deferral_years.png")
+    logger.info(f"  Saved deferral_years.png ({n_scenarios} scenarios, stacked bars)")
 
 
 # ---------------------------------------------------------------------------
 #  Cross-substation plotting
 # ---------------------------------------------------------------------------
 
-def plot_cross_sub_headroom(cross_df, path):
+def plot_cross_sub_headroom(cross_df, path, trafo_labels):
     """
-    Bar chart of mean ΔU_99 (capacity headroom freed by rebalancing) per substation,
+    Bar chart of mean ΔU_99 (capacity headroom freed by rebalancing) per LV transformer,
     plus a weighted-average bar.  Max ΔU_99 is annotated above each bar.
     """
     df = cross_df.copy()
@@ -407,7 +487,7 @@ def plot_cross_sub_headroom(cross_df, path):
     }])
     df = pd.concat([df, avg_row], ignore_index=True)
 
-    fig, ax = plt.subplots(figsize=(12, 6), dpi=150)
+    fig, ax = plt.subplots(figsize=(max(12, 2 * len(df)), 7), dpi=150)
     x = np.arange(len(df))
 
     colors = ['#FF6B00'] * (len(df) - 1) + ['#333333']  # dark bar for average
@@ -415,23 +495,29 @@ def plot_cross_sub_headroom(cross_df, path):
                   color=colors, alpha=0.85, edgecolor='black', linewidth=0.5)
 
     # Annotate max ΔU on top of each bar
+    max_bar = df['max_delta_u_99'].max() * 100
     for i, (_, row) in enumerate(df.iterrows()):
         mean_val = row['mean_delta_u_99'] * 100
         max_val = row['max_delta_u_99'] * 100
-        # Value label inside/on bar
         ax.text(i, mean_val + 0.3, f'{mean_val:.1f} pp',
-                ha='center', va='bottom', fontsize=9, fontweight='bold')
-        # Max annotation
+                ha='center', va='bottom', fontsize=10, fontweight='bold')
         if max_val > mean_val + 0.5:
-            ax.text(i, mean_val + 1.5, f'(max {max_val:.1f})',
-                    ha='center', va='bottom', fontsize=7, color='#555555')
+            ax.text(i, mean_val + max_bar * 0.08, f'(max {max_val:.1f})',
+                    ha='center', va='bottom', fontsize=9, color='#555555')
 
     ax.set_xticks(x)
-    labels = [f'Sub {r["substation"]}\n({r["n_lines"]} lines)' for _, r in df.iterrows()]
-    ax.set_xticklabels(labels, fontsize=9)
+    labels = []
+    for _, r in df.iterrows():
+        sub = r['substation']
+        sl = _sub_label(sub, trafo_labels) if sub != 'Avg' else 'Avg'
+        labels.append(f'{sl}\n({r["n_lines"]:.0f} lines)')
+    ax.set_xticklabels(labels)
     ax.set_ylabel('Mean Capacity Headroom $\\overline{\\Delta U_{99}}$ [pp]')
     ax.set_title('Capacity Headroom Freed by Phase Rebalancing')
     ax.grid(True, axis='y', alpha=0.3)
+
+    # Extra headroom for annotations
+    ax.set_ylim(top=max_bar * 1.3)
 
     fig.tight_layout()
     fig.savefig(path / 'cross_substation_headroom.png', dpi=150, bbox_inches='tight')
@@ -439,58 +525,77 @@ def plot_cross_sub_headroom(cross_df, path):
     logger.info("  Saved cross_substation_headroom.png")
 
 
-def plot_cross_sub_deferral(cross_df, path):
+def plot_cross_sub_deferral(cross_df, path, growth_rates=None, trafo_labels=None):
     """
-    Bar chart of mean (and max) deferral years per substation,
-    plus a weighted-average bar.
+    Grouped bar chart of mean deferral years per LV transformer — one bar per
+    growth scenario, all in a single plot.
     """
+    if growth_rates is None:
+        growth_rates = DEFAULT_GROWTH_RATES
+    if trafo_labels is None:
+        trafo_labels = {}
+
+    n_scenarios = len(growth_rates)
+    scenario_colours = ['#1976D2', '#FF9800', '#D32F2F']
+
     df = cross_df.copy()
 
-    # Weighted average deferral (weighted by n_lines)
+    # Weighted average row
     total_lines = df['n_lines'].sum()
-    weighted_mean_defer = (df['mean_deferral_years'] * df['n_lines']).sum() / total_lines
-    weighted_max_defer = df['max_deferral_years'].max()
+    avg_dict = {'substation': 'Avg', 'n_lines': total_lines}
+    for g in growth_rates:
+        pct = int(round(g * 100))
+        mc = f'mean_deferral_years_g{pct}'
+        avg_dict[mc] = (df[mc] * df['n_lines']).sum() / total_lines
+    df = pd.concat([df, pd.DataFrame([avg_dict])], ignore_index=True)
 
-    avg_row = pd.DataFrame([{
-        'substation': 'Avg',
-        'n_lines': total_lines,
-        'mean_deferral_years': weighted_mean_defer,
-        'max_deferral_years': weighted_max_defer,
-    }])
-    df = pd.concat([df, avg_row], ignore_index=True)
+    n = len(df)
+    x = np.arange(n)
+    total_width = 0.75
+    bar_w = total_width / n_scenarios
 
-    fig, ax = plt.subplots(figsize=(12, 6), dpi=150)
-    x = np.arange(len(df))
-    width = 0.35
+    fig, ax = plt.subplots(figsize=(max(10, 1.8 * n), 7), dpi=150)
 
-    colors_mean = ['#1976D2'] * (len(df) - 1) + ['#333333']
-    colors_max = ['#90CAF9'] * (len(df) - 1) + ['#888888']
+    max_bar = 0
+    for j, g in enumerate(growth_rates):
+        pct = int(round(g * 100))
+        col = f'mean_deferral_years_g{pct}'
+        vals = df[col].fillna(0).values
+        offset = -total_width / 2 + bar_w * (j + 0.5)
+        colour = scenario_colours[j % len(scenario_colours)]
 
-    ax.bar(x - width / 2, df['mean_deferral_years'], width,
-           color=colors_mean, alpha=0.85, edgecolor='black', linewidth=0.5,
-           label='Mean deferral')
-    ax.bar(x + width / 2, df['max_deferral_years'], width,
-           color=colors_max, alpha=0.7, edgecolor='black', linewidth=0.5,
-           label='Max deferral (best-case line)')
+        # Avg bar gets darker shade
+        colours = [colour] * (n - 1) + ['#333333']
 
-    # Annotate values
-    for i, (_, row) in enumerate(df.iterrows()):
-        mean_d = row['mean_deferral_years']
-        max_d = row['max_deferral_years']
-        if np.isfinite(mean_d):
-            ax.text(i - width / 2, mean_d + 0.3, f'{mean_d:.1f}',
-                    ha='center', va='bottom', fontsize=8, fontweight='bold')
-        if np.isfinite(max_d):
-            ax.text(i + width / 2, max_d + 0.3, f'{max_d:.0f}',
-                    ha='center', va='bottom', fontsize=8, color='#555555')
+        ax.bar(x + offset, vals, bar_w * 0.9,
+               color=colours, alpha=0.85, edgecolor='black', linewidth=0.5,
+               label=f'{_growth_label(g)}')
 
+        for i, v in enumerate(vals):
+            if np.isfinite(v) and v > 0.1:
+                ax.text(x[i] + offset, v + 0.2, f'{v:.1f}',
+                        ha='center', va='bottom', fontsize=8, fontweight='bold',
+                        color=colour if i < n - 1 else '#333333')
+        if np.isfinite(vals.max()):
+            max_bar = max(max_bar, vals.max())
+
+    # X labels
+    labels = []
+    for _, r in df.iterrows():
+        sub = r['substation']
+        sl = _sub_label(sub, trafo_labels) if sub != 'Avg' else 'Avg'
+        labels.append(f'{sl}\n({r["n_lines"]:.0f} lines)')
     ax.set_xticks(x)
-    labels = [f'Sub {r["substation"]}\n({r["n_lines"]} lines)' for _, r in df.iterrows()]
-    ax.set_xticklabels(labels, fontsize=9)
-    ax.set_ylabel(f'Reinforcement Deferral [years] (at {ANNUAL_GROWTH_RATE*100:.0f}% growth)')
-    ax.set_title('Reinforcement Deferral from Phase Rebalancing')
-    ax.legend(loc='upper right', fontsize=9)
+    ax.set_xticklabels(labels)
+
+    ax.set_ylabel('Mean Reinforcement Deferral [years]')
+    ax.set_title('Reinforcement Deferral from Phase Rebalancing',
+                 fontsize=13, fontweight='bold')
+    ax.legend(loc='upper right')
     ax.grid(True, axis='y', alpha=0.3)
+
+    if max_bar > 0:
+        ax.set_ylim(top=max_bar * 1.25)
 
     fig.tight_layout()
     fig.savefig(path / 'cross_substation_deferral.png', dpi=150, bbox_inches='tight')
@@ -526,7 +631,7 @@ def plot_cross_sub_delta_u_distribution(all_summaries, path):
                 label=f'Median: {median_val:.1f} pp')
     ax1.set_xlabel('Deferrable Capacity $\\Delta U_{99}$ [percentage points]')
     ax1.set_ylabel('Number of Lines')
-    ax1.set_title(f'Distribution of Deferrable Capacity ({len(all_vals)} lines, {n_subs} substations)')
+    ax1.set_title(f'Distribution of Deferrable Capacity ({len(all_vals)} lines, {n_subs} LV transformers)')
     ax1.legend(fontsize=9)
     ax1.grid(True, alpha=0.3)
 
@@ -552,10 +657,16 @@ def plot_cross_sub_delta_u_distribution(all_summaries, path):
 #  Summary printing
 # ---------------------------------------------------------------------------
 
-def _print_sub_summary(summary, sub):
+def _print_sub_summary(summary, sub, growth_rates=None):
     """Print a formatted summary table for one substation."""
-    logger.info(f"\n  Line Utilization Summary (Substation {sub})  "
-                f"[{ANNUAL_GROWTH_RATE*100:.0f}% annual growth]:")
+    if growth_rates is None:
+        growth_rates = DEFAULT_GROWTH_RATES
+
+    g_base = growth_rates[0]  # use base scenario for display
+    pct = int(round(g_base * 100))
+
+    logger.info(f"\n  Line Utilization Summary (LV Transformer {sub})  "
+                f"[showing {_growth_label(g_base)} growth scenario]:")
     logger.info(f"  {'─'*90}")
     logger.info(f"  {'Line':>12} {'I_lim':>7} {'U_pk99':>8} {'U_bl99':>8} "
                 f"{'ΔU_99':>7} {'>50%':>6} {'>80%':>6} {'>100%':>6} "
@@ -563,9 +674,9 @@ def _print_sub_summary(summary, sub):
     logger.info(f"  {'─'*90}")
 
     for line, row in summary.head(10).iterrows():
-        yr_u = row['years_to_100_unbal']
-        yr_b = row['years_to_100_bal']
-        defer = row['deferral_years']
+        yr_u = row[f'years_to_100_unbal_g{pct}']
+        yr_b = row[f'years_to_100_bal_g{pct}']
+        defer = row[f'deferral_years_g{pct}']
         yr_u_str = f"{yr_u:>8.0f}y" if np.isfinite(yr_u) else f"{'∞':>9}"
         yr_b_str = f"{yr_b:>6.0f}y" if np.isfinite(yr_b) else f"{'∞':>7}"
         defer_str = f"+{defer:>4.0f}y" if np.isfinite(defer) else f"{'—':>6}"
@@ -582,18 +693,24 @@ def _print_sub_summary(summary, sub):
         logger.info(f"  ... ({len(summary) - 10} more lines)")
 
 
-def _print_cross_sub_summary(rows):
+def _print_cross_sub_summary(rows, growth_rates=None):
     """Print cross-substation summary with headroom and deferral columns."""
+    if growth_rates is None:
+        growth_rates = DEFAULT_GROWTH_RATES
+
+    g_base = growth_rates[0]
+    pct = int(round(g_base * 100))
+
     logger.info(f"\n{'='*100}")
-    logger.info("Cross-Substation Line Utilization Summary")
+    logger.info(f"Cross-LV-Transformer Line Utilization Summary [showing {_growth_label(g_base)} growth]")
     logger.info(f"{'='*100}")
     logger.info(f"  {'Sub':>5} {'Lines':>6} {'U_pk99':>8} {'U_bl99':>8} "
                 f"{'MaxΔU':>7} {'MeanΔU':>8} {'N>50%':>6} {'N>80%':>6} {'N>100%':>7} "
                 f"{'MnDefer':>8} {'MxDefer':>8}")
     logger.info(f"  {'─'*95}")
     for r in rows:
-        mn_d = r.get('mean_deferral_years', float('nan'))
-        mx_d = r.get('max_deferral_years', float('nan'))
+        mn_d = r.get(f'mean_deferral_years_g{pct}', float('nan'))
+        mx_d = r.get(f'max_deferral_years_g{pct}', float('nan'))
         mn_d_str = f"{mn_d:>7.1f}y" if np.isfinite(mn_d) else f"{'—':>8}"
         mx_d_str = f"{mx_d:>7.0f}y" if np.isfinite(mx_d) else f"{'—':>8}"
         logger.info(
@@ -613,6 +730,16 @@ def main():
     logger.info("=" * 80)
     logger.info("Jason Line Utilization Analysis")
     logger.info("=" * 80)
+
+    # Load growth rates and transformer labels from config
+    try:
+        from Jason_config import load_config
+        cfg = load_config()
+        growth_rates = cfg.get('growth_rates', DEFAULT_GROWTH_RATES)
+    except Exception:
+        growth_rates = DEFAULT_GROWTH_RATES
+    trafo_labels = _load_trafo_labels()
+    logger.info(f"Growth rate scenarios: {[_growth_label(g) for g in growth_rates]}")
 
     if not PF_RESULTS_DIR.exists():
         logger.error(f"Results directory not found: {PF_RESULTS_DIR}")
@@ -645,7 +772,7 @@ def main():
 
     for sub in substations:
         logger.info(f"\n{'='*60}")
-        logger.info(f"Line Utilization Analysis — Substation {sub}")
+        logger.info(f"Line Utilization Analysis — LV Transformer {sub}")
         logger.info(f"{'='*60}")
 
         sub_path = PF_RESULTS_DIR / sub
@@ -666,8 +793,8 @@ def main():
         # Step 2: Compute utilization timeseries
         u_peak, u_balanced, delta_u = compute_utilization_timeseries(i_a, i_b, i_c, i_lim)
 
-        # Step 3: Compute per-line summary
-        summary = compute_line_summary(u_peak, u_balanced, delta_u, i_lim)
+        # Step 3: Compute per-line summary (with all growth scenarios)
+        summary = compute_line_summary(u_peak, u_balanced, delta_u, i_lim, growth_rates)
 
         all_summaries[sub] = summary
 
@@ -682,17 +809,17 @@ def main():
         logger.info(f"  Saved 4 parquets to {out_path}")
 
         # Step 5: Generate plots
-        plot_top_lines_bar(summary, out_path, sub)
-        plot_top_lines_timeseries(u_peak, u_balanced, summary, out_path, sub)
-        plot_delta_u_distribution(summary, out_path, sub)
-        plot_deferral_years(summary, out_path, sub)
+        sl = _sub_label(sub, trafo_labels)
+        plot_top_lines_bar(summary, out_path, sl)
+        plot_top_lines_timeseries(u_peak, u_balanced, summary, out_path, sl)
+        plot_delta_u_distribution(summary, out_path, sl)
+        plot_deferral_years(summary, out_path, sl, growth_rates)
 
         # Step 6: Print summary table
-        _print_sub_summary(summary, sub)
+        _print_sub_summary(summary, sub, growth_rates)
 
-        # Collect cross-substation stats (including deferral & headroom)
-        valid_defer = summary['deferral_years'].dropna()
-        cross_sub_rows.append({
+        # Collect cross-substation stats (including deferral for each scenario)
+        row = {
             'substation': sub,
             'n_lines': len(summary),
             'max_u_peak_99': summary['u_peak_99'].max(),
@@ -702,20 +829,25 @@ def main():
             'n_above_50_unbal': (summary['share_above_50'] > 0).sum(),
             'n_above_80_unbal': (summary['share_above_80'] > 0).sum(),
             'n_above_100_unbal': (summary['share_above_100'] > 0).sum(),
-            'mean_deferral_years': valid_defer.mean() if len(valid_defer) > 0 else np.nan,
-            'max_deferral_years': valid_defer.max() if len(valid_defer) > 0 else np.nan,
             'n_above_50_bal': (summary['u_balanced_99'] > 0.5).sum(),
-        })
+        }
+        for g in growth_rates:
+            pct = int(round(g * 100))
+            valid_defer = summary[f'deferral_years_g{pct}'].dropna()
+            row[f'mean_deferral_years_g{pct}'] = valid_defer.mean() if len(valid_defer) > 0 else np.nan
+            row[f'max_deferral_years_g{pct}'] = valid_defer.max() if len(valid_defer) > 0 else np.nan
+
+        cross_sub_rows.append(row)
 
     # Cross-substation summary
     if cross_sub_rows:
-        _print_cross_sub_summary(cross_sub_rows)
+        _print_cross_sub_summary(cross_sub_rows, growth_rates)
 
         cross_df = pd.DataFrame(cross_sub_rows)
 
         # Generate cross-substation plots
-        plot_cross_sub_headroom(cross_df, PF_RESULTS_DIR)
-        plot_cross_sub_deferral(cross_df, PF_RESULTS_DIR)
+        plot_cross_sub_headroom(cross_df, PF_RESULTS_DIR, trafo_labels)
+        plot_cross_sub_deferral(cross_df, PF_RESULTS_DIR, growth_rates, trafo_labels)
         plot_cross_sub_delta_u_distribution(all_summaries, PF_RESULTS_DIR)
 
         # Save cross-substation summary

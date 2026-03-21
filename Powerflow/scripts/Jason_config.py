@@ -40,6 +40,19 @@ def load_substation_ids():
     return [str(x) for x in cfg.get('IDs', [])]
 
 
+def load_transformer_labels():
+    """Return dict mapping substation ID (str) -> display label like '579 SP1'."""
+    with open(CONFIG_PATH) as f:
+        cfg = yaml.safe_load(f)
+    defaults = cfg.get('defaults', {})
+    substations = cfg.get('substations', {})
+    labels = {}
+    for sub_id, overrides in substations.items():
+        trafo = overrides.get('transformer', defaults.get('transformer', 1))
+        labels[str(sub_id)] = f'{sub_id} SP{trafo}'
+    return labels
+
+
 def load_config(substation_id=None):
     """
     Load configuration for a specific substation.
@@ -98,6 +111,7 @@ def load_config(substation_id=None):
         'phase_ratio': phase_ratio,
         'phase_seed': _get('phase_seed', 42),
         'coverage_ratio': _get('coverage_ratio', None),
+        'growth_rates': _get('growth_rates', [0.02, 0.04, 0.06]),
         'script_dir': SCRIPT_DIR,
         'project_root': PROJECT_ROOT,
         'topology_dir': topology_dir,

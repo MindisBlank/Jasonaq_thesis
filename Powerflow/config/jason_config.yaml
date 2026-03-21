@@ -3,7 +3,7 @@
 
 #IDs: ["1056","1299","1340","1398","1457","579"]
 
-IDs: ["1456"]
+IDs: ["1299","1056","1457","1340","1456","579"]
 
 defaults:
   phase_seed: 42
@@ -11,6 +11,7 @@ defaults:
   coverage_ratio: null       # null = auto from parquet per_completed
   transformer: 1             # transformer number (sp1)
   date_range: "20250801_20250901"
+  growth_rates: [0.034, 0.039]   # grunnspá (3.4%), high forecast (3.9%)
 
 substations:
   579:
