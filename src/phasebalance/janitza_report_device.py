@@ -251,7 +251,7 @@ def plot_colored_cur(
             ax.add_collection(LineCollection(segs, colors=color, linewidths=2.0, alpha=0.9))
 
     ax.set_ylabel(f"{metric_name}")
-    _label = f"Feeder {feeder_name}" if feeder_name else f"Device {device_id}"
+    _label = f"{feeder_name}" if feeder_name else f"Device {device_id}"
     ax.set_title(f"{_label} - {metric_name} {start} → {end}")
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d\n%H:%M"))
     ax.grid(True, which="both", linestyle=":", linewidth=0.5, alpha=0.6)
@@ -266,8 +266,18 @@ def plot_colored_cur(
         prev = thr
     ax.set_ylim(ymin, max(ymax, prev * 1.2))
 
-    handles = [Line2D([0], [0], color=c, lw=2) for c in PAIR_COLORS.values()]
-    ax.legend(handles, PAIR_COLORS.keys(), title="Largest disparity", loc="upper right")
+    # Compute culprit-pair percentages
+    pair_counts = df["culprit_pair"].value_counts()
+    total = pair_counts.sum()
+
+    handles = []
+    labels = []
+    for pair, color in PAIR_COLORS.items():
+        pct = 100.0 * pair_counts.get(pair, 0) / total if total > 0 else 0.0
+        handles.append(Line2D([0], [0], color=color, lw=2))
+        labels.append(f"{pair} ({pct:.0f}%)")
+
+    ax.legend(handles, labels, title="Largest disparity", loc="upper right")
 
     fig.autofmt_xdate()
     fig.tight_layout()
@@ -294,7 +304,7 @@ def plot_event_stripes(
     feeder_name: str | None = None,
 ) -> None:
     if not events:
-        _ev_label = f"Feeder {feeder_name}" if feeder_name else f"Device {device_id}"
+        _ev_label = f"{feeder_name}" if feeder_name else f"Device {device_id}"
         _save_text_figure("No events detected", f"{_ev_label} - Events ({metric_name}) {start} → {end}", output_path, dpi=dpi)
         return
     fig, ax = plt.subplots(figsize=(12, max(3, len(events) * 0.3)), dpi=dpi)
@@ -309,7 +319,7 @@ def plot_event_stripes(
     ax.set_yticks(y)
     ax.set_yticklabels([f"Evt {i+1}" for i in range(len(events))])
     ax.set_xlabel("Time")
-    _ev_label = f"Feeder {feeder_name}" if feeder_name else f"Device {device_id}"
+    _ev_label = f"{feeder_name}" if feeder_name else f"Device {device_id}"
     ax.set_title(f"{_ev_label} - Events ({metric_name}) {start} → {end}")
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d\n%H:%M"))
     ax.grid(True, axis="x", linestyle=":", linewidth=0.5, alpha=0.5)
@@ -319,7 +329,7 @@ def plot_event_stripes(
 def plot_severity_duration_scatter(events: Sequence[EventRecord], device_id: int, metric_name: str, dpi: int, output_path: str, feeder_name: str | None = None) -> None:
     fig, ax = plt.subplots(figsize=(8, 6), dpi=dpi)
     if not events:
-        _sd_label = f"Feeder {feeder_name}" if feeder_name else f"Device {device_id}"
+        _sd_label = f"{feeder_name}" if feeder_name else f"Device {device_id}"
         _save_text_figure("No events detected", f"Severity vs Duration - {_sd_label}", output_path, dpi=dpi)
         return
     for pair, color in PAIR_COLORS.items():
@@ -329,7 +339,7 @@ def plot_severity_duration_scatter(events: Sequence[EventRecord], device_id: int
         ax.scatter([ev.duration_h for ev in evs], [ev.peak for ev in evs], s=[max(ev.i_sum_peak, 0.0) * 5.0 for ev in evs], alpha=0.7, label=pair, color=color, edgecolors="k", linewidths=0.3)
     ax.set_xlabel("Duration (hours)")
     ax.set_ylabel(f"Peak {metric_name}")
-    _sd_label = f"Feeder {feeder_name}" if feeder_name else f"Device {device_id}"
+    _sd_label = f"{feeder_name}" if feeder_name else f"Device {device_id}"
     ax.set_title(f"Severity vs Duration - {_sd_label}")
     ax.grid(True, linestyle=":", linewidth=0.5, alpha=0.6)
     ax.legend(title="Largest disparity")
@@ -343,7 +353,7 @@ def plot_diurnal_heatmap(df: pd.DataFrame, device_id: int, metric_name: str, dpi
     data["weekday"] = data.index.dayofweek
     pivot = data.pivot_table(index="weekday", columns="hour", values="imbalance", aggfunc="median")
     if pivot.empty:
-        _dh_label = f"Feeder {feeder_name}" if feeder_name else f"Device {device_id}"
+        _dh_label = f"{feeder_name}" if feeder_name else f"Device {device_id}"
         _save_text_figure("Insufficient data", f"Diurnal imbalance heatmap - {_dh_label}", output_path, dpi=dpi)
         return
     fig, ax = plt.subplots(figsize=(12, 4), dpi=dpi)
@@ -352,7 +362,7 @@ def plot_diurnal_heatmap(df: pd.DataFrame, device_id: int, metric_name: str, dpi
     ax.set_yticks(np.arange(len(pivot.index)))
     ax.set_yticklabels(["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"])  # indices already 0..6
     ax.set_xlabel("Hour of day"); ax.set_ylabel("Weekday")
-    _dh_label = f"Feeder {feeder_name}" if feeder_name else f"Device {device_id}"
+    _dh_label = f"{feeder_name}" if feeder_name else f"Device {device_id}"
     ax.set_title(f"Diurnal imbalance heatmap - {_dh_label}")
     cbar = plt.colorbar(im, ax=ax); cbar.set_label(f"Median {metric_name}")
     fig.tight_layout(); fig.savefig(output_path, bbox_inches="tight"); plt.close(fig)
@@ -370,7 +380,7 @@ def plot_exceedance_and_taat(
 ) -> None:
     # Now: ONLY the exceedance curve (no TAAT subplot).
     if series.empty:
-        _ex_label = f"Feeder {feeder_name}" if feeder_name else f"Device {device_id}"
+        _ex_label = f"{feeder_name}" if feeder_name else f"Device {device_id}"
         _save_text_figure("No data", f"{_ex_label} - {metric_name}", output_path, dpi=dpi)
         return
 
@@ -389,7 +399,7 @@ def plot_exceedance_and_taat(
     ax1.set_title("Exceedance curve")
     ax1.grid(True, linestyle=":", linewidth=0.5, alpha=0.6)
 
-    _ex_label = f"Feeder {feeder_name}" if feeder_name else f"Device {device_id}"
+    _ex_label = f"{feeder_name}" if feeder_name else f"Device {device_id}"
     fig.suptitle(f"{_ex_label} - {metric_name}")
     fig.tight_layout()
     fig.savefig(output_path, bbox_inches="tight")
@@ -415,7 +425,7 @@ def plot_ternary(df: pd.DataFrame, device_id: int, dpi: int, output_path: str, f
     getattr(ax, "set_tlabel", lambda *_: None)("Ia fraction")
     getattr(ax, "set_llabel", lambda *_: None)("Ib fraction")
     getattr(ax, "set_rlabel", lambda *_: None)("Ic fraction")
-    _tn_label = f"Feeder {feeder_name}" if feeder_name else f"Device {device_id}"
+    _tn_label = f"{feeder_name}" if feeder_name else f"Device {device_id}"
     ax.set_title(f"Ternary current balance - {_tn_label}")
     fig.tight_layout(); fig.savefig(output_path, bbox_inches="tight"); plt.close(fig)
 
