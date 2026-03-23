@@ -278,7 +278,7 @@ def load_topology_data(substation_id=None):
 #  Shared drawing
 # ---------------------------------------------------------------------------
 
-def draw_topology(ax, positions, node_types, edge_types, substation_id,
+def draw_topology(ax, positions, node_types, edge_types, substation_id,trafo_labels,
                   topo_sub, conn_sub, all_nodes, title_suffix=""):
     """
     Draw the topology (nodes + edges) onto a matplotlib Axes using the
@@ -352,8 +352,9 @@ def draw_topology(ax, positions, node_types, edge_types, substation_id,
     n_junct = sum(1 for v in node_types.values() if v == 'junction_cabinet')
     n_endpt = sum(1 for v in node_types.values() if v == 'meter_endpoint')
 
+    sub_label = trafo_labels.get(str(substation_id), f'{substation_id} SP1')
     ax.set_title(
-        f'Network Topology: Substation {substation_id}  {title_suffix}\n'
+        f'Network Topology: {sub_label} {title_suffix}\n'
         f'{len(topo_sub)} cables, {len(all_nodes)} nodes '
         f'({n_trans} transformer, {n_junct} junction cabinets, {n_endpt} endpoints) | '
         f'{len(conn_sub)} meters',
@@ -440,24 +441,20 @@ def compute_tree_layout(G, node_types):
 
 def compute_spring_layout(G, node_types):
     """
-    Force-directed spring layout with the transformer pinned at centre.
+    Force-directed spring layout seeded from the tree layout so the
+    structural hierarchy is preserved while the spring relaxation
+    smooths spacing and reduces overlaps.
 
     Returns positions dict  {node_name: (x, y)}.
     """
-    # Find transformer node to pin
-    fixed_nodes = []
-    init_pos = {}
-    for n, ntype in node_types.items():
-        if ntype == 'transformer' and n in G:
-            fixed_nodes.append(n)
-            init_pos[n] = (0.5, 0.5)
+    # Use tree layout as starting positions — deterministic & structurally aware
+    init_pos = compute_tree_layout(G, node_types)
 
-    # Provide initial positions for all nodes so spring_layout starts smoothly
-    for n in G.nodes():
-        if n not in init_pos:
-            init_pos[n] = (np.random.uniform(0.1, 0.9), np.random.uniform(0.1, 0.9))
+    # Pin the transformer so it stays central
+    fixed_nodes = [n for n, t in node_types.items()
+                   if t == 'transformer' and n in G]
 
-    k = 1.8 / np.sqrt(max(G.number_of_nodes(), 1))  # spacing factor
+    k = 1.8 / np.sqrt(max(G.number_of_nodes(), 1))
     positions = nx.spring_layout(
         G,
         pos=init_pos,
@@ -497,6 +494,13 @@ def main():
     if data is None:
         return
 
+    # Load transformer labels for plot titles
+    try:
+        from Jason_config import load_transformer_labels
+        trafo_labels = load_transformer_labels()
+    except Exception:
+        trafo_labels = {}
+
     topo_sub = data['topo_sub']
     conn_sub = data['conn_sub']
     node_coords = data['node_coords']
@@ -512,7 +516,7 @@ def main():
     # ---------------------------------------------------------------
     fig1, ax1 = plt.subplots(1, 1, figsize=(18, 16), dpi=150)
     draw_topology(ax1, node_coords, node_types, edge_types,
-                  SUBSTATION_ID, topo_sub, conn_sub, all_nodes,
+                  SUBSTATION_ID, trafo_labels, topo_sub, conn_sub, all_nodes,
                   title_suffix="(Geographic)")
     ax1.set_xlabel('X (ISN93)', fontsize=10)
     ax1.set_ylabel('Y (ISN93)', fontsize=10)
@@ -525,7 +529,7 @@ def main():
     tree_pos = compute_tree_layout(G, node_types)
     fig2, ax2 = plt.subplots(1, 1, figsize=(18, 12), dpi=150)
     draw_topology(ax2, tree_pos, node_types, edge_types,
-                  SUBSTATION_ID, topo_sub, conn_sub, all_nodes,
+                  SUBSTATION_ID, trafo_labels, topo_sub, conn_sub, all_nodes,
                   title_suffix="(Tree Layout)")
     ax2.set_xticks([])
     ax2.set_yticks([])
@@ -537,7 +541,7 @@ def main():
     spring_pos = compute_spring_layout(G, node_types)
     fig3, ax3 = plt.subplots(1, 1, figsize=(16, 16), dpi=150)
     draw_topology(ax3, spring_pos, node_types, edge_types,
-                  SUBSTATION_ID, topo_sub, conn_sub, all_nodes,
+                  SUBSTATION_ID, trafo_labels, topo_sub, conn_sub, all_nodes,
                   title_suffix="(Spring Layout)")
     ax3.set_xticks([])
     ax3.set_yticks([])

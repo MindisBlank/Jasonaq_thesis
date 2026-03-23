@@ -162,7 +162,7 @@ def plot_additional_losses(df, path, sub_label):
     ax.axhline(y=0, color='black', linewidth=0.5, alpha=0.3)
     ax.set_ylabel('Losses [kW]')
     ax.set_xlabel('Time')
-    ax.set_title(f'Additional Cable Losses due to Phase Imbalance — LV Transformer {sub_label}')
+    ax.set_title(f'Additional Cable Losses due to Phase Imbalance — {sub_label}')
     ax.legend(loc='upper right')
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
@@ -190,7 +190,7 @@ def plot_cumulative_energy(df, path, sub_label, dt_hours=0.25):
 
     ax.set_ylabel('Cumulative Additional Energy Loss [kWh]')
     ax.set_xlabel('Time')
-    ax.set_title(f'Cumulative Additional Energy Loss from Phase Imbalance — LV Transformer {sub_label}')
+    ax.set_title(f'Cumulative Additional Energy Loss from Phase Imbalance — {sub_label}')
     ax.legend(loc='upper left')
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
@@ -237,7 +237,7 @@ def plot_loss_breakdown_bar(summary, path, sub_label):
     ax.set_yticks(y_pos)
     ax.set_yticklabels(categories)
     ax.set_xlabel('Energy Loss [kWh]')
-    ax.set_title(f'Cable Loss Breakdown — LV Transformer {sub_label}')
+    ax.set_title(f'Cable Loss Breakdown — {sub_label}')
     ax.legend(loc='lower right')
     ax.grid(True, axis='x', alpha=0.3)
 

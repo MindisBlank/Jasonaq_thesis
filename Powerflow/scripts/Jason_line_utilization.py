@@ -44,7 +44,8 @@ PF_RESULTS_DIR = PROJECT_ROOT / "Powerflow" / "output" / "pf_results"
 
 # Only include these substations in the cross-substation comparison
 # Set to None to include all substations with results
-SELECTED_SUBSTATIONS = ['1056', '1299', '1340', '1456', '1457', '579']
+#SELECTED_SUBSTATIONS = ['1056', '1299', '1340', '1456', '1457', '579']
+SELECTED_SUBSTATIONS = ["1248","1354","1416"]
 
 # Growth rates loaded from config in main(); module-level default as fallback
 DEFAULT_GROWTH_RATES = [0.034, 0.039]
@@ -259,7 +260,7 @@ def plot_top_lines_bar(summary, path, sub_label, top_n=15):
     ax.set_xticks(x)
     ax.set_xticklabels([rename_line_label(l) for l in top.index], rotation=45, ha='right', fontsize=8)
     ax.set_ylabel('Line Utilization [%]')
-    ax.set_title(f'Top-{len(top)} Most Loaded Lines — LV Transformer {sub_label}')
+    ax.set_title(f'Top-{len(top)} Most Loaded Lines — {sub_label}')
     ax.legend(loc='upper right', fontsize=8)
     ax.grid(True, axis='y', alpha=0.3)
 
@@ -307,7 +308,6 @@ def plot_top_lines_timeseries(u_peak, u_balanced, summary, path, sub_label,
         ax.plot(u_balanced[line] * 100, color='#1976D2', linewidth=0.8,
                 alpha=0.8, label='$U_{balanced}$ (rebalanced)')
 
-        ax.axhline(y=100, color='darkred', linestyle='-', alpha=0.5)
         label = rename_line_label(line)
         ax.set_ylabel(f'{label} [%]')
         ax.grid(True, alpha=0.3)
@@ -324,7 +324,7 @@ def plot_top_lines_timeseries(u_peak, u_balanced, summary, path, sub_label,
             ax.legend(loc='upper left', fontsize=7)
 
     threshold_note = f'$\\Delta U_{{99}}$ > {min_delta_pp} pp' if len(significant) > 0 else f'Top {fallback_n}'
-    axes[0].set_title(f'Line Utilization Timeseries — LV Transformer {sub_label} ({threshold_note})')
+    axes[0].set_title(f'Line Utilization Timeseries — {sub_label} ({threshold_note})')
     axes[-1].set_xlabel('Time')
     fig.tight_layout()
     fig.savefig(path / 'top_lines_timeseries.png', dpi=150, bbox_inches='tight')
@@ -347,7 +347,7 @@ def plot_delta_u_distribution(summary, path, sub_label):
                 label=f'Median: {delta_99.median():.1f} pp')
     ax1.set_xlabel('Deferrable Capacity $\\Delta U_{99}$ [percentage points]')
     ax1.set_ylabel('Number of Lines')
-    ax1.set_title(f'Distribution of Deferrable Capacity — LV Transformer {sub_label}')
+    ax1.set_title(f'Distribution of Deferrable Capacity — {sub_label}')
     ax1.legend()
     ax1.grid(True, alpha=0.3)
 
@@ -357,7 +357,7 @@ def plot_delta_u_distribution(summary, path, sub_label):
     ax2.plot(sorted_vals, cdf, color='#1976D2', linewidth=2)
     ax2.set_xlabel('$\\Delta U_{99}$ [percentage points]')
     ax2.set_ylabel('CDF (fraction of lines)')
-    ax2.set_title(f'CDF of Deferrable Capacity — LV Transformer {sub_label}')
+    ax2.set_title(f'CDF of Deferrable Capacity — {sub_label}')
     ax2.grid(True, alpha=0.3)
 
     fig.tight_layout()
@@ -447,7 +447,7 @@ def plot_deferral_years(summary, path, sub_label, growth_rates=None):
     ax.set_yticks(y)
     ax.set_yticklabels([rename_line_label(l) for l in valid.index])
     ax.set_xlabel('Years to 100 % Capacity')
-    ax.set_title(f'Reinforcement Timeline — LV Transformer {sub_label}',
+    ax.set_title(f'Reinforcement Timeline — {sub_label}',
                  fontsize=13, fontweight='bold')
     ax.legend(loc='upper right', fontsize=8, ncol=2)
     ax.grid(True, axis='x', alpha=0.3)
