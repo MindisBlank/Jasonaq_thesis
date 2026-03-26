@@ -141,30 +141,79 @@ def classify_meter_phases(profiles):
     return is_3phase
 
 
-def assign_phases(single_phase_meters, phase_ratio, seed=42):
+def compute_meter_avg_power(profiles, single_phase_meters):
+    """Compute mean |P_a| for each single-phase meter (P_a holds total power)."""
+    avg_power = {}
+    for meter_id in single_phase_meters:
+        df = profiles.get(str(meter_id))
+        if df is None:
+            df = profiles.get(meter_id)
+        if df is not None and 'P_a' in df.columns:
+            avg_power[meter_id] = pd.to_numeric(df['P_a'], errors='coerce').abs().mean()
+        else:
+            avg_power[meter_id] = 0.0
+    return avg_power
+
+
+def assign_phases(single_phase_meters, phase_ratio, seed=42, meter_avg_power=None):
     """
-    Assign single-phase meters to phases A, B, C according to the ratio.
+    Assign single-phase meters to phases A, B, C matching the target current ratio.
+
+    When meter_avg_power is provided, uses greedy bin-packing so the cumulative
+    load per phase matches the target ratio (not just the meter count).
+    Falls back to count-based assignment when meter_avg_power is None.
 
     Args:
         single_phase_meters: list of meter IDs (int)
         phase_ratio: [pct_a, pct_b, pct_c] summing to 100
-        seed: random seed for reproducibility
+        seed: random seed (used only in count-based fallback)
+        meter_avg_power: dict {meter_id: avg_watts} from compute_meter_avg_power
 
     Returns dict: {meter_id: 'A'|'B'|'C'}
     """
-    rng = np.random.RandomState(seed)
-    n = len(single_phase_meters)
+    if meter_avg_power is None:
+        # Fallback: count-based assignment (original behaviour)
+        rng = np.random.RandomState(seed)
+        n = len(single_phase_meters)
+        n_a = int(round(n * phase_ratio[0] / 100))
+        n_b = int(round(n * phase_ratio[1] / 100))
+        n_c = n - n_a - n_b
+        assignments = ['A'] * n_a + ['B'] * n_b + ['C'] * n_c
+        rng.shuffle(assignments)
+        sorted_meters = sorted(single_phase_meters)
+        return dict(zip(sorted_meters, assignments))
 
-    n_a = int(round(n * phase_ratio[0] / 100))
-    n_b = int(round(n * phase_ratio[1] / 100))
-    n_c = n - n_a - n_b  # remainder to C to ensure sum = n
+    # Load-weighted greedy bin-packing
+    phases = ['A', 'B', 'C']
+    total_load = sum(meter_avg_power.get(m, 0.0) for m in single_phase_meters)
 
-    assignments = ['A'] * n_a + ['B'] * n_b + ['C'] * n_c
-    rng.shuffle(assignments)
+    if total_load == 0:
+        # All meters have zero load — fall back to count-based
+        return assign_phases(single_phase_meters, phase_ratio, seed, meter_avg_power=None)
 
-    # Sort meter list for deterministic assignment before shuffle
-    sorted_meters = sorted(single_phase_meters)
-    return dict(zip(sorted_meters, assignments))
+    target = {ph: total_load * phase_ratio[i] / 100.0 for i, ph in enumerate(phases)}
+    assigned_load = {ph: 0.0 for ph in phases}
+
+    # Sort meters largest-first for better bin-packing; break ties by ID
+    sorted_meters = sorted(single_phase_meters,
+                           key=lambda m: (-meter_avg_power.get(m, 0.0), m))
+
+    assignment = {}
+    for meter_id in sorted_meters:
+        # Assign to the phase with the largest remaining deficit
+        best_phase = max(phases, key=lambda ph: target[ph] - assigned_load[ph])
+        assignment[meter_id] = best_phase
+        assigned_load[best_phase] += meter_avg_power.get(meter_id, 0.0)
+
+    # Log achieved vs target split
+    for ph in phases:
+        achieved_pct = (assigned_load[ph] / total_load * 100) if total_load > 0 else 0
+        target_pct = phase_ratio[phases.index(ph)]
+        n_ph = sum(1 for v in assignment.values() if v == ph)
+        logger.info(f"  Phase {ph}: {n_ph} meters, "
+                    f"load share {achieved_pct:.1f}% (target {target_pct}%)")
+
+    return assignment
 
 
 # ---------------------------------------------------------------------------
@@ -358,11 +407,12 @@ def main():
     logger.info(f"  Single-phase meters: {len(single_phase_meters)}")
     logger.info(f"  Three-phase meters:  {len(three_phase_meters)}")
 
-    # --- Assign phases to single-phase meters ---
-    phase_assignment = assign_phases(single_phase_meters, cfg['phase_ratio'], cfg['phase_seed'])
-    for ph in ['A', 'B', 'C']:
-        count = sum(1 for v in phase_assignment.values() if v == ph)
-        logger.info(f"  Phase {ph}: {count} single-phase meters")
+    # --- Assign phases to single-phase meters (load-weighted) ---
+    meter_avg_power = compute_meter_avg_power(profiles, single_phase_meters)
+    phase_assignment = assign_phases(
+        single_phase_meters, cfg['phase_ratio'], cfg['phase_seed'],
+        meter_avg_power=meter_avg_power
+    )
 
     # --- Build per-phase P/Q matrices ---
     logger.info("\nBuilding per-phase Pload/Qload matrices...")

@@ -252,7 +252,7 @@ def plot_colored_cur(
 
     ax.set_ylabel(f"{metric_name}")
     _label = f"{feeder_name}" if feeder_name else f"Device {device_id}"
-    ax.set_title(f"{_label} - {metric_name} {start} → {end}")
+    ax.set_title(f"{_label} - {metric_name}", fontsize=14, fontweight="bold")
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d\n%H:%M"))
     ax.grid(True, which="both", linestyle=":", linewidth=0.5, alpha=0.6)
 
@@ -320,7 +320,7 @@ def plot_event_stripes(
     ax.set_yticklabels([f"Evt {i+1}" for i in range(len(events))])
     ax.set_xlabel("Time")
     _ev_label = f"{feeder_name}" if feeder_name else f"Device {device_id}"
-    ax.set_title(f"{_ev_label} - Events ({metric_name}) {start} → {end}")
+    ax.set_title(f"{_ev_label} - Events ({metric_name})", fontsize=14, fontweight="bold")
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d\n%H:%M"))
     ax.grid(True, axis="x", linestyle=":", linewidth=0.5, alpha=0.5)
     fig.tight_layout(); fig.savefig(output_path, bbox_inches="tight"); plt.close(fig)
@@ -340,7 +340,7 @@ def plot_severity_duration_scatter(events: Sequence[EventRecord], device_id: int
     ax.set_xlabel("Duration (hours)")
     ax.set_ylabel(f"Peak {metric_name}")
     _sd_label = f"{feeder_name}" if feeder_name else f"Device {device_id}"
-    ax.set_title(f"Severity vs Duration - {_sd_label}")
+    ax.set_title(f"Severity vs Duration - {_sd_label}", fontsize=14, fontweight="bold")
     ax.grid(True, linestyle=":", linewidth=0.5, alpha=0.6)
     ax.legend(title="Largest disparity")
     fig.tight_layout(); fig.savefig(output_path, bbox_inches="tight"); plt.close(fig)
@@ -363,7 +363,7 @@ def plot_diurnal_heatmap(df: pd.DataFrame, device_id: int, metric_name: str, dpi
     ax.set_yticklabels(["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"])  # indices already 0..6
     ax.set_xlabel("Hour of day"); ax.set_ylabel("Weekday")
     _dh_label = f"{feeder_name}" if feeder_name else f"Device {device_id}"
-    ax.set_title(f"Diurnal imbalance heatmap - {_dh_label}")
+    ax.set_title(f"Diurnal imbalance heatmap - {_dh_label}", fontsize=14, fontweight="bold")
     cbar = plt.colorbar(im, ax=ax); cbar.set_label(f"Median {metric_name}")
     fig.tight_layout(); fig.savefig(output_path, bbox_inches="tight"); plt.close(fig)
 
@@ -426,7 +426,7 @@ def plot_ternary(df: pd.DataFrame, device_id: int, dpi: int, output_path: str, f
     getattr(ax, "set_llabel", lambda *_: None)("Ib fraction")
     getattr(ax, "set_rlabel", lambda *_: None)("Ic fraction")
     _tn_label = f"{feeder_name}" if feeder_name else f"Device {device_id}"
-    ax.set_title(f"Ternary current balance - {_tn_label}")
+    ax.set_title(f"Ternary current balance - {_tn_label}", fontsize=14, fontweight="bold")
     fig.tight_layout(); fig.savefig(output_path, bbox_inches="tight"); plt.close(fig)
 
 # ------------------------------ IO & orchestration ---------------------------

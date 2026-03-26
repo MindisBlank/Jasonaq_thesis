@@ -593,14 +593,14 @@ def main():
 
             if row['NODE1_type'] == 'LvFeeder':
                 feeder_count += 1
-                i_max = min(row['LV_FEEDER_FUSE_SIZE'], row['CURRENT_CARRYING_CAPACITY_PIPE'])
+                i_max = row['CURRENT_CARRYING_CAPACITY_PIPE']
                 lines_dict[f'feeder{feeder_count}'] = pp.create_line_from_parameters(
                     net,
                     from_bus=buses_dict['lv_trafo'],
                     to_bus=buses_dict[str(row['NODE2_value'])],
                     length_km=length_km,
                     r_ohm_per_km=r1, x_ohm_per_km=x1, c_nf_per_km=140.0,
-                    r0_ohm_per_km=r1 * 4.0, x0_ohm_per_km=x1, c0_nf_per_km=140.0,
+                    r0_ohm_per_km=r1 * 4.0, x0_ohm_per_km=x1 * 4.0, c0_nf_per_km=140.0,
                     max_i_ka=float(i_max / 1000),
                     name=str(line_idx)
                 )

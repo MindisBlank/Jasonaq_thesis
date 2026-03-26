@@ -41,11 +41,11 @@ logger = logging.getLogger(__name__)
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent.parent
 PF_RESULTS_DIR = PROJECT_ROOT / "Powerflow" / "output" / "pf_results"
-
+global_fontsize_title =14
 # Only include these substations in the cross-substation comparison
 # Set to None to include all substations with results
-#SELECTED_SUBSTATIONS = ['1056', '1299', '1340', '1456', '1457', '579']
-SELECTED_SUBSTATIONS = ["1248","1354","1416"]
+SELECTED_SUBSTATIONS = ['1056', '1299', '1340', '1456', '1457', '579']
+#SELECTED_SUBSTATIONS = ["1248","1354","1416"]
 
 # Growth rates loaded from config in main(); module-level default as fallback
 DEFAULT_GROWTH_RATES = [0.034, 0.039]
@@ -79,6 +79,8 @@ def rename_line_label(name):
     In the pandapower model, 'feeder' lines are the main trunk cables from
     the transformer to junction cabinets.  The thesis reserves 'feeder' for
     the LV distribution side, so we relabel to avoid confusion.
+
+    Update : Not use anymore since we switched to using the original line names from pandapower, which are more descriptive and don't follow a strict 'feederN' pattern.
     """
     s = str(name)
     if s.startswith('feeder'):
@@ -258,9 +260,9 @@ def plot_top_lines_bar(summary, path, sub_label, top_n=15):
                         ha='center', fontsize=7, color='#D32F2F')
 
     ax.set_xticks(x)
-    ax.set_xticklabels([rename_line_label(l) for l in top.index], rotation=45, ha='right', fontsize=8)
+    ax.set_xticklabels([l for l in top.index], rotation=45, ha='right', fontsize=8)
     ax.set_ylabel('Line Utilization [%]')
-    ax.set_title(f'Top-{len(top)} Most Loaded Lines — {sub_label}')
+    ax.set_title(f'Top-{len(top)} Most Loaded Lines — {sub_label}', fontsize=global_fontsize_title, fontweight='bold')
     ax.legend(loc='upper right', fontsize=8)
     ax.grid(True, axis='y', alpha=0.3)
 
@@ -308,7 +310,7 @@ def plot_top_lines_timeseries(u_peak, u_balanced, summary, path, sub_label,
         ax.plot(u_balanced[line] * 100, color='#1976D2', linewidth=0.8,
                 alpha=0.8, label='$U_{balanced}$ (rebalanced)')
 
-        label = rename_line_label(line)
+        label = line
         ax.set_ylabel(f'{label} [%]')
         ax.grid(True, alpha=0.3)
 
@@ -324,7 +326,7 @@ def plot_top_lines_timeseries(u_peak, u_balanced, summary, path, sub_label,
             ax.legend(loc='upper left', fontsize=7)
 
     threshold_note = f'$\\Delta U_{{99}}$ > {min_delta_pp} pp' if len(significant) > 0 else f'Top {fallback_n}'
-    axes[0].set_title(f'Line Utilization Timeseries — {sub_label} ({threshold_note})')
+    axes[0].set_title(f'Line Utilization Timeseries — {sub_label} ({threshold_note})', fontsize=global_fontsize_title, fontweight='bold')
     axes[-1].set_xlabel('Time')
     fig.tight_layout()
     fig.savefig(path / 'top_lines_timeseries.png', dpi=150, bbox_inches='tight')
@@ -347,7 +349,7 @@ def plot_delta_u_distribution(summary, path, sub_label):
                 label=f'Median: {delta_99.median():.1f} pp')
     ax1.set_xlabel('Deferrable Capacity $\\Delta U_{99}$ [percentage points]')
     ax1.set_ylabel('Number of Lines')
-    ax1.set_title(f'Distribution of Deferrable Capacity — {sub_label}')
+    ax1.set_title(f'Distribution of Deferrable Capacity — {sub_label}', fontsize=global_fontsize_title, fontweight='bold')
     ax1.legend()
     ax1.grid(True, alpha=0.3)
 
@@ -357,7 +359,7 @@ def plot_delta_u_distribution(summary, path, sub_label):
     ax2.plot(sorted_vals, cdf, color='#1976D2', linewidth=2)
     ax2.set_xlabel('$\\Delta U_{99}$ [percentage points]')
     ax2.set_ylabel('CDF (fraction of lines)')
-    ax2.set_title(f'CDF of Deferrable Capacity — {sub_label}')
+    ax2.set_title(f'CDF of Deferrable Capacity — {sub_label}', fontsize=global_fontsize_title, fontweight='bold')
     ax2.grid(True, alpha=0.3)
 
     fig.tight_layout()
@@ -445,10 +447,10 @@ def plot_deferral_years(summary, path, sub_label, growth_rates=None):
             max_end = max(max_end, end)
 
     ax.set_yticks(y)
-    ax.set_yticklabels([rename_line_label(l) for l in valid.index])
+    ax.set_yticklabels([l for l in valid.index])
     ax.set_xlabel('Years to 100 % Capacity')
     ax.set_title(f'Reinforcement Timeline — {sub_label}',
-                 fontsize=13, fontweight='bold')
+                 fontsize=global_fontsize_title, fontweight='bold')
     ax.legend(loc='upper right', fontsize=8, ncol=2)
     ax.grid(True, axis='x', alpha=0.3)
     ax.invert_yaxis()
@@ -468,7 +470,7 @@ def plot_deferral_years(summary, path, sub_label, growth_rates=None):
 
 def plot_cross_sub_headroom(cross_df, path, trafo_labels):
     """
-    Bar chart of mean ΔU_99 (capacity headroom freed by rebalancing) per LV transformer,
+    Bar chart of mean ΔU_99 (capacity headroom freed by rebalancing) per Supply Point,
     plus a weighted-average bar.  Max ΔU_99 is annotated above each bar.
     """
     df = cross_df.copy()
@@ -513,11 +515,11 @@ def plot_cross_sub_headroom(cross_df, path, trafo_labels):
         labels.append(f'{sl}\n({r["n_lines"]:.0f} lines)')
     ax.set_xticklabels(labels)
     ax.set_ylabel('Mean Capacity Headroom $\\overline{\\Delta U_{99}}$ [pp]')
-    ax.set_title('Capacity Headroom Freed by Phase Rebalancing')
+    ax.set_title('Capacity Headroom Freed by Phase Rebalancing', fontsize=global_fontsize_title, fontweight='bold')
     ax.grid(True, axis='y', alpha=0.3)
 
     # Extra headroom for annotations
-    ax.set_ylim(top=max_bar * 1.3)
+    ax.set_ylim(top=max_bar * 0.5)
 
     fig.tight_layout()
     fig.savefig(path / 'cross_substation_headroom.png', dpi=150, bbox_inches='tight')
@@ -527,7 +529,7 @@ def plot_cross_sub_headroom(cross_df, path, trafo_labels):
 
 def plot_cross_sub_deferral(cross_df, path, growth_rates=None, trafo_labels=None):
     """
-    Grouped bar chart of mean deferral years per LV transformer — one bar per
+    Grouped bar chart of mean deferral years per Supply Point — one bar per
     growth scenario, all in a single plot.
     """
     if growth_rates is None:
@@ -591,7 +593,7 @@ def plot_cross_sub_deferral(cross_df, path, growth_rates=None, trafo_labels=None
     ax.set_ylabel('Mean Reinforcement Deferral [years]')
     ax.set_title('Reinforcement Deferral from Phase Rebalancing',
                  fontsize=13, fontweight='bold')
-    ax.legend(loc='upper right')
+    ax.legend(loc='upper right',fontsize=10)
     ax.grid(True, axis='y', alpha=0.3)
 
     if max_bar > 0:
@@ -631,7 +633,7 @@ def plot_cross_sub_delta_u_distribution(all_summaries, path):
                 label=f'Median: {median_val:.1f} pp')
     ax1.set_xlabel('Deferrable Capacity $\\Delta U_{99}$ [percentage points]')
     ax1.set_ylabel('Number of Lines')
-    ax1.set_title(f'Distribution of Deferrable Capacity ({len(all_vals)} lines, {n_subs} LV transformers)')
+    ax1.set_title(f'Distribution of Deferrable Capacity ({len(all_vals)} lines, {n_subs} Supply Points)',fontsize=global_fontsize_title, fontweight='bold')
     ax1.legend(fontsize=9)
     ax1.grid(True, alpha=0.3)
 
@@ -643,7 +645,7 @@ def plot_cross_sub_delta_u_distribution(all_summaries, path):
                 alpha=0.5, label=f'Median: {median_val:.1f} pp')
     ax2.set_xlabel('$\\Delta U_{99}$ [percentage points]')
     ax2.set_ylabel('CDF (fraction of lines)')
-    ax2.set_title('CDF of Deferrable Capacity')
+    ax2.set_title('CDF of Deferrable Capacity', fontsize=global_fontsize_title, fontweight='bold')
     ax2.legend(fontsize=9)
     ax2.grid(True, alpha=0.3)
 
@@ -681,7 +683,7 @@ def _print_sub_summary(summary, sub, growth_rates=None):
         yr_b_str = f"{yr_b:>6.0f}y" if np.isfinite(yr_b) else f"{'∞':>7}"
         defer_str = f"+{defer:>4.0f}y" if np.isfinite(defer) else f"{'—':>6}"
         logger.info(
-            f"  {rename_line_label(line):>12} {row['i_lim_a']:>6.0f}A "
+            f"  {line:>12} {row['i_lim_a']:>6.0f}A "
             f"{row['u_peak_99']*100:>7.1f}% {row['u_balanced_99']*100:>7.1f}% "
             f"{row['delta_u_99']*100:>6.1f}pp "
             f"{row['share_above_50']*100:>5.1f}% {row['share_above_80']*100:>5.1f}% "

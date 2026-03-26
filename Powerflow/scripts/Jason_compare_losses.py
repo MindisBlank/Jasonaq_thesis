@@ -37,10 +37,8 @@ PF_RESULTS_DIR = PROJECT_ROOT / "Powerflow" / "output" / "pf_results"
 # Only include these substations in the cross-substation comparison
 # Set to None to include all substations with results
 SELECTED_SUBSTATIONS = ['1299', '1456', '1056', '579', '1457', '1340']
-
 # Global font size bump — applied at module level
-plt.rcParams.update({'font.size': 11, 'axes.titlesize': 13, 'axes.labelsize': 12,
-                     'xtick.labelsize': 10, 'ytick.labelsize': 10, 'legend.fontsize': 9})
+plt.rcParams.update({'font.size': 12, 'axes.titlesize': 14, 'axes.labelsize': 12,'xtick.labelsize': 10, 'ytick.labelsize': 10, 'legend.fontsize': 10})
 
 
 def _load_trafo_labels():
@@ -162,7 +160,7 @@ def plot_additional_losses(df, path, sub_label):
     ax.axhline(y=0, color='black', linewidth=0.5, alpha=0.3)
     ax.set_ylabel('Losses [kW]')
     ax.set_xlabel('Time')
-    ax.set_title(f'Additional Cable Losses due to Phase Imbalance — {sub_label}')
+    ax.set_title(f'Additional Cable Losses due to Phase Imbalance — {sub_label}', fontweight='bold')
     ax.legend(loc='upper right')
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
@@ -190,7 +188,7 @@ def plot_cumulative_energy(df, path, sub_label, dt_hours=0.25):
 
     ax.set_ylabel('Cumulative Additional Energy Loss [kWh]')
     ax.set_xlabel('Time')
-    ax.set_title(f'Cumulative Additional Energy Loss from Phase Imbalance — {sub_label}')
+    ax.set_title(f'Cumulative Additional Energy Loss from Phase Imbalance — {sub_label}', fontweight='bold')
     ax.legend(loc='upper left')
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
@@ -237,7 +235,7 @@ def plot_loss_breakdown_bar(summary, path, sub_label):
     ax.set_yticks(y_pos)
     ax.set_yticklabels(categories)
     ax.set_xlabel('Energy Loss [kWh]')
-    ax.set_title(f'Cable Loss Breakdown — {sub_label}')
+    ax.set_title(f'Cable Loss Breakdown — {sub_label}', fontweight='bold')
     ax.legend(loc='lower right')
     ax.grid(True, axis='x', alpha=0.3)
 
@@ -372,7 +370,7 @@ def plot_cross_substation_bar(all_summaries, path, trafo_labels):
     ax.set_xticks(x)
     ax.set_xticklabels(labels)
     ax.set_ylabel('Cable Losses [kWh]')
-    ax.set_title('Cable Loss Comparison: Balanced (solid) vs Unbalanced (faded)')
+    ax.set_title('Cable Loss Comparison: Balanced (solid) vs Unbalanced (faded)', fontweight='bold')
     ax.legend(loc='upper left')
     ax.grid(True, axis='y', alpha=0.3)
 
@@ -410,7 +408,7 @@ def plot_cross_substation_loss_percent(all_summaries, path, trafo_labels):
     ax.axvline(x=len(all_summaries) - 0.5, color='gray', linestyle='--', alpha=0.5)
 
     ax.set_ylabel('Additional Cable Losses from Imbalance [%]')
-    ax.set_title('Cable Loss Increase Due to Phase Imbalance by LV Transformer')
+    ax.set_title('Cable Loss Increase Due to Phase Imbalance by Supply Point', fontweight='bold')
     ax.grid(True, axis='y', alpha=0.3)
 
     fig.tight_layout()
@@ -459,7 +457,7 @@ def main():
     for sub in substations:
         sl = _sub_label(sub, trafo_labels)
         logger.info(f"\n{'='*60}")
-        logger.info(f"Comparing losses for LV Transformer {sl}")
+        logger.info(f"Comparing losses for Supply Point {sl}")
         logger.info(f"{'='*60}")
 
         sub_path = PF_RESULTS_DIR / sub
@@ -491,7 +489,7 @@ def main():
 
         # Print summary
         s = summary.iloc[0]
-        logger.info(f"\n  Loss Comparison Summary (LV Transformer {sl}):")
+        logger.info(f"\n  Loss Comparison Summary (Supply Point {sl}):")
         logger.info(f"  {'─'*60}")
         logger.info(f"  Simulation period:         {s['simulation_hours']:.0f} hours ({s['n_timesteps']:.0f} timesteps)")
         logger.info(f"  Grid throughput:           {s['throughput_kwh']:.0f} kWh")
