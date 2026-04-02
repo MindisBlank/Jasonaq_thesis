@@ -51,8 +51,7 @@ SELECTED_SUBSTATIONS = ['1056', '1299', '1340', '1456', '1457', '579']
 DEFAULT_GROWTH_RATES = [0.034, 0.039]
 
 # Global font size bump
-plt.rcParams.update({'font.size': 11, 'axes.titlesize': 13, 'axes.labelsize': 12,
-                     'xtick.labelsize': 10, 'ytick.labelsize': 10, 'legend.fontsize': 9})
+plt.rcParams.update({'font.size': 14, 'axes.titlesize': 14, 'axes.labelsize': 14,'xtick.labelsize': 12, 'ytick.labelsize': 12, 'legend.fontsize': 12})
 
 
 def _load_trafo_labels():
@@ -250,14 +249,27 @@ def plot_top_lines_bar(summary, path, sub_label, top_n=15):
     ax.axhline(y=80, color='red', linestyle='--', alpha=0.5, label='80% threshold')
     ax.axhline(y=100, color='darkred', linestyle='-', alpha=0.7, label='100% capacity limit')
 
-    # Annotate delta_U on top bars
+    # Annotate all positive deltas
     for i, (idx, row) in enumerate(top.iterrows()):
         delta = row['delta_u_99'] * 100
-        if delta > 1:
-            ax.annotate(f'$\\Delta U$={delta:.1f}pp',
-                        xy=(i, row['u_peak_99'] * 100),
-                        xytext=(0, 5), textcoords='offset points',
-                        ha='center', fontsize=7, color='#D32F2F')
+
+        if delta > 0:
+            if delta < 0.05:
+                delta_text = r'<0.1'
+            else:
+                delta_text = f'{delta:.1f}'
+
+            ax.annotate(
+                f'$\\Delta U_{{99}}$={delta_text}pp',
+                xy=(i, row['u_peak_99'] * 100),
+                xytext=(0, 5),
+                textcoords='offset points',
+                ha='center',
+                fontsize=10,
+                fontweight='bold',
+                color='#D32F2F',
+                rotation=45
+            )
 
     ax.set_xticks(x)
     ax.set_xticklabels([l for l in top.index], rotation=45, ha='right', fontsize=8)
@@ -317,16 +329,21 @@ def plot_top_lines_timeseries(u_peak, u_balanced, summary, path, sub_label,
         # Annotate I_lim and ΔU
         ilim = summary.loc[line, 'i_lim_a']
         delta = summary.loc[line, 'delta_u_99'] * 100
-        ax.text(0.98, 0.95,
-                f'$I_{{lim}}$={ilim:.0f} A  |  $\\Delta U_{{99}}$={delta:.1f} pp',
-                transform=ax.transAxes, fontsize=8, ha='right', va='top',
-                bbox=dict(boxstyle='round,pad=0.2', facecolor='wheat', alpha=0.7))
+        ax.text(
+            0.98, 0.95,
+            f'$I_{{lim}}$={ilim:.0f} A  |  $\\Delta U_{{99}}$={delta:.1f} pp',
+            transform=ax.transAxes,
+            fontsize=13,
+            ha='right',
+            va='top',
+            bbox=dict(boxstyle='round,pad=0.2', facecolor='wheat', alpha=0.55)
+        )
 
         if ax == axes[0]:
-            ax.legend(loc='upper left', fontsize=7)
+            ax.legend(loc='upper left', fontsize=14, framealpha=0.6)
 
     threshold_note = f'$\\Delta U_{{99}}$ > {min_delta_pp} pp' if len(significant) > 0 else f'Top {fallback_n}'
-    axes[0].set_title(f'Line Utilization Timeseries — {sub_label} ({threshold_note})', fontsize=global_fontsize_title, fontweight='bold')
+    axes[0].set_title(f'Line Utilization Timeseries — {sub_label} ({threshold_note})', fontsize=16, fontweight='bold')
     axes[-1].set_xlabel('Time')
     fig.tight_layout()
     fig.savefig(path / 'top_lines_timeseries.png', dpi=150, bbox_inches='tight')
@@ -451,7 +468,7 @@ def plot_deferral_years(summary, path, sub_label, growth_rates=None):
     ax.set_xlabel('Years to 100 % Capacity')
     ax.set_title(f'Reinforcement Timeline — {sub_label}',
                  fontsize=global_fontsize_title, fontweight='bold')
-    ax.legend(loc='upper right', fontsize=8, ncol=2)
+    ax.legend(loc='upper right', fontsize=9, ncol=2)
     ax.grid(True, axis='x', alpha=0.3)
     ax.invert_yaxis()
 
@@ -505,7 +522,7 @@ def plot_cross_sub_headroom(cross_df, path, trafo_labels):
                 ha='center', va='bottom', fontsize=10, fontweight='bold')
         if max_val > mean_val + 0.5:
             ax.text(i, mean_val + max_bar * 0.08, f'(max {max_val:.1f})',
-                    ha='center', va='bottom', fontsize=9, color='#555555')
+                    ha='center', va='bottom', fontsize=12, color='#555555')
 
     ax.set_xticks(x)
     labels = []
@@ -515,7 +532,7 @@ def plot_cross_sub_headroom(cross_df, path, trafo_labels):
         labels.append(f'{sl}\n({r["n_lines"]:.0f} lines)')
     ax.set_xticklabels(labels)
     ax.set_ylabel('Mean Capacity Headroom $\\overline{\\Delta U_{99}}$ [pp]')
-    ax.set_title('Capacity Headroom Freed by Phase Rebalancing', fontsize=global_fontsize_title, fontweight='bold')
+    ax.set_title('Capacity Headroom Freed by Phase Rebalancing', fontsize=14, fontweight='bold')
     ax.grid(True, axis='y', alpha=0.3)
 
     # Extra headroom for annotations
@@ -576,7 +593,7 @@ def plot_cross_sub_deferral(cross_df, path, growth_rates=None, trafo_labels=None
         for i, v in enumerate(vals):
             if np.isfinite(v) and v > 0.1:
                 ax.text(x[i] + offset, v + 0.2, f'{v:.1f}',
-                        ha='center', va='bottom', fontsize=8, fontweight='bold',
+                        ha='center', va='bottom', fontsize=10, fontweight='bold',
                         color=colour if i < n - 1 else '#333333')
         if np.isfinite(vals.max()):
             max_bar = max(max_bar, vals.max())
@@ -592,8 +609,8 @@ def plot_cross_sub_deferral(cross_df, path, growth_rates=None, trafo_labels=None
 
     ax.set_ylabel('Mean Reinforcement Deferral [years]')
     ax.set_title('Reinforcement Deferral from Phase Rebalancing',
-                 fontsize=13, fontweight='bold')
-    ax.legend(loc='upper right',fontsize=10)
+                 fontsize=14, fontweight='bold')
+    ax.legend(loc='upper right',fontsize=14)
     ax.grid(True, axis='y', alpha=0.3)
 
     if max_bar > 0:
@@ -634,7 +651,7 @@ def plot_cross_sub_delta_u_distribution(all_summaries, path):
     ax1.set_xlabel('Deferrable Capacity $\\Delta U_{99}$ [percentage points]')
     ax1.set_ylabel('Number of Lines')
     ax1.set_title(f'Distribution of Deferrable Capacity ({len(all_vals)} lines, {n_subs} Supply Points)',fontsize=global_fontsize_title, fontweight='bold')
-    ax1.legend(fontsize=9)
+    ax1.legend(fontsize=14)
     ax1.grid(True, alpha=0.3)
 
     # Right: CDF

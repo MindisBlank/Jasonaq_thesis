@@ -38,7 +38,7 @@ PF_RESULTS_DIR = PROJECT_ROOT / "Powerflow" / "output" / "pf_results"
 # Set to None to include all substations with results
 SELECTED_SUBSTATIONS = ['1299', '1456', '1056', '579', '1457', '1340']
 # Global font size bump — applied at module level
-plt.rcParams.update({'font.size': 12, 'axes.titlesize': 14, 'axes.labelsize': 12,'xtick.labelsize': 10, 'ytick.labelsize': 10, 'legend.fontsize': 10})
+plt.rcParams.update({'font.size': 14, 'axes.titlesize': 14, 'axes.labelsize': 14,'xtick.labelsize': 12, 'ytick.labelsize': 12, 'legend.fontsize': 12})
 
 
 def _load_trafo_labels():
@@ -355,14 +355,27 @@ def plot_cross_substation_bar(all_summaries, path, trafo_labels):
 
     # Annotate additional losses above each pair
     max_bar = max(df['unbalanced_total_kwh'].max(), df['balanced_total_kwh'].max())
+    # Pre-compute rounded additional losses per substation so Total label
+    # matches the visible per-substation numbers (avoids ±0.1 rounding gap).
+    n_substations = n - 1  # exclude the Total row
+    rounded_additional_sum = sum(
+        round(df.iloc[i]['additional_total_kwh'], 1) for i in range(n_substations)
+    )
+
     for i in range(n):
         add_kwh = df.iloc[i]['additional_total_kwh']
         bal_kwh = df.iloc[i]['balanced_total_kwh']
         unbal_kwh = df.iloc[i]['unbalanced_total_kwh']
         pct = add_kwh / bal_kwh * 100 if bal_kwh > 0 else 0
         y_top = max(unbal_kwh, bal_kwh)
-        ax.text(i, y_top + max_bar * 0.02, f'+{add_kwh:.0f} kWh\n({pct:.1f}%)',
-                ha='center', fontsize=9, color='#D32F2F', fontweight='bold')
+
+        # Use the rounded-sum for the Total bar so it's consistent with
+        # what you'd get by adding up the individual displayed labels.
+        display_kwh = rounded_additional_sum if labels[i] == 'Total' else add_kwh
+
+        ax.text(i, y_top + max_bar * 0.02,
+                f'+{display_kwh:.1f} kWh\n({pct:.1f}%)',
+                ha='center', fontsize=10, color='#D32F2F', fontweight='bold')
 
     # Separator line before Total
     ax.axvline(x=n - 1.5, color='gray', linestyle='--', alpha=0.5)

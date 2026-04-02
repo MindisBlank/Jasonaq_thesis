@@ -330,7 +330,7 @@ def draw_topology(ax, positions, node_types, edge_types, substation_id,trafo_lab
                         ha='center', va='bottom', xytext=(0, 14),
                         textcoords='offset points', color=colors[ntype])
         elif ntype == 'junction_cabinet':
-            ax.annotate(node_name, (x, y), fontsize=5.5, fontweight='bold',
+            ax.annotate(node_name, (x, y), fontsize=6, fontweight='bold',
                         ha='center', va='bottom', xytext=(0, 10),
                         textcoords='offset points', color=colors[ntype])
         else:  # meter_endpoint — no label, just the dot
@@ -345,7 +345,7 @@ def draw_topology(ax, positions, node_types, edge_types, substation_id,trafo_lab
         plt.Line2D([0], [0], **edge_styles['distribution'], label='Distribution Cable'),
         plt.Line2D([0], [0], **edge_styles['service'], label='Service Cable'),
     ]
-    ax.legend(handles=legend_elements, loc='upper left', fontsize=8, framealpha=0.9)
+    ax.legend(handles=legend_elements,  fontsize=14, framealpha=0.6)
 
     # --- Title ---
     n_trans = sum(1 for v in node_types.values() if v == 'transformer')
@@ -358,7 +358,7 @@ def draw_topology(ax, positions, node_types, edge_types, substation_id,trafo_lab
         f'{len(topo_sub)} cables, {len(all_nodes)} nodes '
         f'({n_trans} transformer, {n_junct} junction cabinets, {n_endpt} endpoints) | '
         f'{len(conn_sub)} meters',
-        fontsize=12, fontweight='bold')
+        fontsize=14, fontweight='bold')
 
     # --- Clean frame ---
     ax.grid(False)
