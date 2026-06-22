@@ -45,7 +45,6 @@ global_fontsize_title =14
 # Only include these substations in the cross-substation comparison
 # Set to None to include all substations with results
 SELECTED_SUBSTATIONS = ['1056', '1299', '1340', '1456', '1457', '579']
-#SELECTED_SUBSTATIONS = ["1248","1354","1416"]
 
 # Growth rates loaded from config in main(); module-level default as fallback
 DEFAULT_GROWTH_RATES = [0.034, 0.039]

@@ -210,6 +210,7 @@ def fetch_and_save_smartmeter(
     e_q_plus: str = E_Q_PLUS,
     e_q_minus: str = E_Q_MINUS,
     assume_power_kw: bool = False,   # if True: kW/kvar -> kVA; convert to W with *1000 when computing I
+    power_factor: float = 0.9,
 ):
     """
     Fetch smartmeter data for given substations and time window, aggregate to `time_res`,
@@ -402,12 +403,6 @@ def fetch_and_save_smartmeter(
 
 
     # ------------------------------------------------------------------
-    # D) Power factor: assume fixed PF = 0.9
-    # ------------------------------------------------------------------
-
-
-
-    # ------------------------------------------------------------------
     # E) Join everything + compute I_est
     # ------------------------------------------------------------------
     result = cur_pivot
@@ -416,9 +411,8 @@ def fetch_and_save_smartmeter(
     result = result.join(p_pivot,    on=["substation_id", "transformer", "ts"], how="left")
     result = result.join(v_pivot,    on=["substation_id", "transformer", "ts"], how="left")
 
-    # Fixed power factor
-    result = result.withColumn("PF_used", F.lit(0.9))
-    tanphi = F.tan(F.acos(F.lit(0.9)))
+    result = result.withColumn("PF_used", F.lit(power_factor))
+    tanphi = F.tan(F.acos(F.lit(power_factor)))
 
     result = (
     result
@@ -713,6 +707,7 @@ def fetch_meter_data_for_PF(
     voltage_phases: list[str] = V_PHS,
     e_q_plus: str = E_Q_PLUS,
     e_q_minus: str = E_Q_MINUS,
+    power_factor: float = 0.9,
 ) -> pd.DataFrame:
     """
     PF export (single parquet) at METER resolution:
@@ -879,16 +874,15 @@ def fetch_meter_data_for_PF(
     v_wide = v_wide.withColumn("V_ph_avg", F.when(v_cnt > 0, v_sum / v_cnt).otherwise(F.lit(None)))
 
     # ------------------------------
-    # 4) Compute per-meter Q using fixed PF = 0.9
+    # 4) Compute per-meter Q using fixed PF
     # ------------------------------
-    pf_used = 0.9
-    tanphi_lit = F.tan(F.acos(F.lit(pf_used)))
+    tanphi_lit = F.tan(F.acos(F.lit(power_factor)))
 
     # Compute Q per phase from P per phase (per meter)
     q_from_pf = (
         p_wide
         .select("mp_id", "ts_res", "P_a", "P_b", "P_c")  # only what we need to compute Q
-        .withColumn("PF_used", F.lit(float(pf_used)))
+        .withColumn("PF_used", F.lit(float(power_factor)))
         .withColumn("Q_a", F.coalesce(F.col("P_a"), F.lit(0.0)) * tanphi_lit)
         .withColumn("Q_b", F.coalesce(F.col("P_b"), F.lit(0.0)) * tanphi_lit)
         .withColumn("Q_c", F.coalesce(F.col("P_c"), F.lit(0.0)) * tanphi_lit)
