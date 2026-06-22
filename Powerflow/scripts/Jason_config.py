@@ -101,7 +101,24 @@ def load_config(substation_id=None):
         f"_transformer_sp{transformer}_{date_range}.parquet"
     )
 
-    topology_dir = _derive_topology_dir(smartmeter_file, PROJECT_ROOT)
+    # --- Path overrides (optional, fall back to auto-derived defaults) ---
+    smartmeter_file_override = _get('smartmeter_file', None)
+    if smartmeter_file_override:
+        smartmeter_file = smartmeter_file_override
+
+    smartmeter_dir_str = _get('smartmeter_dir', None)
+    smartmeter_dir = (
+        PROJECT_ROOT / smartmeter_dir_str
+        if smartmeter_dir_str
+        else PROJECT_ROOT / "data" / "smartmeter"
+    )
+
+    topology_dir_str = _get('topology_dir', None)
+    topology_dir = (
+        PROJECT_ROOT / topology_dir_str
+        if topology_dir_str
+        else _derive_topology_dir(smartmeter_file, PROJECT_ROOT)
+    )
 
     return {
         'substation_id': substation_id,
@@ -115,6 +132,6 @@ def load_config(substation_id=None):
         'script_dir': SCRIPT_DIR,
         'project_root': PROJECT_ROOT,
         'topology_dir': topology_dir,
-        'smartmeter_dir': PROJECT_ROOT / "data" / "smartmeter",
+        'smartmeter_dir': smartmeter_dir,
         'output_dir': PROJECT_ROOT / "Powerflow" / "output" / "topology",
     }

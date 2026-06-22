@@ -3,19 +3,23 @@
 ## Overview
 
 This document describes the data translation from Icelandic ArcGIS topology
-exports and Databricks smart meter data into the 3PhaseInsight second_batch
-format. It covers all placeholder values, assumptions, and known limitations.
+exports and Databricks smart meter data into the power flow input format.
+It covers all placeholder values, assumptions, and known limitations.
+
+The pipeline supports multiple substations configured via `config/jason_config.yaml`.
+The example below uses substation 1416 as a reference, but all values are
+derived dynamically from the source data and config.
 
 ## Source Data
 
-| File | Records | Description |
-|------|---------|-------------|
-| `cabinets.csv` | 4 | ArcGIS junction cabinet exports (Tengiskápur) |
-| `lines_clean.csv` | 57 | ArcGIS LV line exports (cables) |
-| `transformers.csv` | 1 | Transformer data (ABB, 800 kVA, 11/0.4 kV) |
-| `smartmeter_*.parquet` | ~537K | 15-min smart meter data, Aug-Oct 2025 |
+| File | Description |
+|------|-------------|
+| `cabinets.csv` | ArcGIS junction cabinet exports (Tengiskápur) |
+| `lines_clean.csv` | ArcGIS LV line exports (cables) |
+| `transformers.csv` | Transformer data |
+| `smartmeter_*.parquet` | 15-min smart meter data from Databricks |
 
-### Network: Substation 1416 (Jöfursbás), Reykjavik
+### Example: Substation 1416 (Jöfursbás), Reykjavik
 
 - 1 transformer: 800 kVA, 11/0.4 kV, ABB (2019)
 - 4 junction cabinets (TENGINR: 31832, 31692, 31693, 33894)
@@ -36,10 +40,20 @@ cable reactance at 50 Hz.
 
 | GERD_DECODED | Size (mm²) | Material | R (Ohm/km) | X (Ohm/km) | Capacity (A) |
 |-------------|-----------|----------|-----------|-----------|-------------|
+| 4 x 2.5 Cu | 2.5 | Copper | 7.410 | 0.110 | 30 |
 | 4 x 10 Cu | 10 | Copper | 1.830 | 0.094 | 73 |
 | 4 x 16 Cu | 16 | Copper | 1.150 | 0.087 | 98 |
+| 4 x 25 Cu | 25 | Copper | 0.727 | 0.083 | 129 |
+| 4 x 35 Cu | 35 | Copper | 0.524 | 0.081 | 152 |
+| 4 x 50 Cu | 50 | Copper | 0.387 | 0.079 | 179 |
+| 4 x 300 Cu | 300 | Copper | 0.060 | 0.069 | 530 |
+| 4 x 25 Al | 25 | Aluminum | 1.200 | 0.088 | 96 |
 | 4 x 50 Al | 50 | Aluminum | 0.641 | 0.078 | 137 |
+| 4 x 70 Al | 70 | Aluminum | 0.443 | 0.075 | 169 |
+| 4 x 95 Al | 95 | Aluminum | 0.320 | 0.072 | 201 |
+| 4 x 120 Al | 120 | Aluminum | 0.253 | 0.072 | 234 |
 | 4 x 150 Al | 150 | Aluminum | 0.207 | 0.073 | 258 |
+| 4 x 185 Al | 185 | Aluminum | 0.164 | 0.072 | 294 |
 | 4 x 240 Al | 240 | Aluminum | 0.125 | 0.070 | 340 |
 | 4 x 300 Al | 300 | Aluminum | 0.100 | 0.069 | 385 |
 
@@ -47,34 +61,26 @@ cable reactance at 50 Hz.
 at 50 Hz is approximately equal for these sizes. Reactance values are
 typical for single-core XLPE underground cables at 0.6/1 kV.
 
-**Note**: The existing `test/translate_to_second_batch.py` used a flat
-value of 0.0018 Ohm/m (= 1.8 Ohm/km) for ALL cables, which is only
-appropriate for 10 mm² Cu. This adapter uses cable-specific values.
-
 **Important**: Values are stored as **Ohm/km** (not total Ohms), matching
-the existing second_batch format and pandapower's `r_ohm_per_km` parameter.
+pandapower's `r_ohm_per_km` parameter.
 
 ### 2. Per-Phase Reactive Power
 
-The smart meter data provides only `Q_total` (aggregate reactive power
-across all three phases). The pipeline expects per-phase reactive power
-(`reactive_power_q12_l1/l2/l3`).
+The smart meter data provides `Q_total` (aggregate reactive power) and
+per-phase columns `Q_a`, `Q_b`, `Q_c`. The power flow needs per-phase
+reactive power assigned to the correct network phase.
 
-**Method**: Proportional split based on active power ratio:
+Reactive power is handled in `Jason_prepare_powerflow.py`, which reads
+directly from the source parquet (not the adapter's intermediate CSVs):
 
-```
-Q_phase_i = Q_total * |P_phase_i| / (|P_a| + |P_b| + |P_c|)
-```
+- **3-phase meters**: `Q_a`, `Q_b`, `Q_c` are used directly from the parquet.
+- **Single-phase meters**: All of `Q_total` is placed on the meter's
+  assigned network phase (A, B, or C). The other two phases are set to zero.
 
-When total active power is zero, Q is set to zero for all phases.
-
-**Justification**: Assuming load power factor is similar across phases,
-the reactive power should be roughly proportional to the active power
-on each phase. This is a common approximation when only aggregate Q
-is available.
-
-**Limitation**: This may not accurately represent asymmetric loads where
-one phase has a significantly different power factor.
+**Justification**: A single-phase meter's reactive power is physically
+on one phase only, so assigning the full `Q_total` to the designated
+phase is correct. For 3-phase meters, the per-phase Q columns are
+already available in the source data.
 
 ### 3. Export Power and Capacitive Reactive Power
 
@@ -87,10 +93,22 @@ one phase has a significantly different power factor.
 
 | Parameter | Value | Justification |
 |-----------|-------|---------------|
-| `lv_feeder_fuse_size` | 250 A | Typical main feeder fuse for 800 kVA transformer |
-| `service_fuse_size` | 25 A | Typical Icelandic residential service fuse |
-| `lv_feeder` | LvFeeder.1416 | Must match jason_config.yaml `IDs: ["1416"]` |
-| `zip_code_secondary_substation` | 112 | From cabinets.csv PNR field (Reykjavik postal code) |
+| `lv_feeder_fuse_size` | Dynamic | Computed from transformer kVA (e.g., 800 kVA → 400 A) |
+| `service_fuse_size` | 25 A | Default Icelandic residential service fuse (configurable) |
+| `lv_feeder` | `LvFeeder.{substation_id}` | Dynamic from `jason_config.yaml` |
+| `zip_code_secondary_substation` | From PNR | Read from `cabinets.csv` PNR field |
+
+**Feeder fuse size lookup:**
+
+| Transformer kVA | Fuse (A) |
+|-----------------|----------|
+| ≤ 100 | 160 |
+| ≤ 200 | 200 |
+| ≤ 315 | 250 |
+| ≤ 500 | 315 |
+| ≤ 800 | 400 |
+| ≤ 1000 | 630 |
+| > 1000 | 800 |
 
 ### 5. Meter-Cabinet Connection Defaults
 
@@ -103,54 +121,55 @@ one phase has a significantly different power factor.
 
 ### 6. Transformer Parameters (Power Flow)
 
-Standard values used for the pandapower transformer model:
+Values used for the pandapower transformer model:
 
 | Parameter | Value | Description |
 |-----------|-------|-------------|
-| `sn_mva` | 0.8 | Rated power (800 kVA / 1000) |
-| `vn_hv_kv` | 11 | HV side: 11 kV (from transformers.csv FORSPENNA=11000) |
-| `vn_lv_kv` | 0.4 | LV side: 400 V (from transformers.csv EFTIRSPENNA=400) |
-| `vkr_percent` | 0.65 | Copper loss impedance (standard) |
-| `vk_percent` | 7.0 | Short-circuit impedance (standard) |
-| `pfe_kw` | 0.45 | Core losses at rated voltage (standard) |
-| `i0_percent` | 0.2 | No-load current (standard) |
+| `sn_mva` | Dynamic | Rated power from `MALRAUN` (e.g., 800 kVA → 0.8 MVA) |
+| `vn_hv_kv` | 11 | HV side from `FORSPENNA` (11000 V) |
+| `vn_lv_kv` | 0.4 | LV side from `EFTIRSPENNA` (400 V) |
+| `vkr_percent` | 0.7 | Copper loss impedance |
+| `vk_percent` | 6.0 | Short-circuit impedance |
+| `pfe_kw` | 0.0 | Core losses (set to zero) |
+| `i0_percent` | 0.2 | No-load current |
+| `vector_group` | Dynamic | From `TENGIFLOKKUR` field (e.g., "Dyn5") |
 
-**Note**: `vk_percent` = 5.96% is available from the transformer nameplate
-(`SKAMMHLAUPSPENNA` field), but the standard value of 7% is used for
-consistency with the existing power flow model.
+**Note**: `SKAMMHLAUPSPENNA` in the transformer CSV contains the nameplate
+short-circuit voltage, which could be used in place of the hardcoded 6%.
 
 ---
 
 ## Data Transformations
 
-### Column Mapping: Icelandic -> second_batch
+### Column Mapping: Icelandic -> Power Flow Format
 
 #### Topology (lines_clean.csv -> lv_topology.csv)
 
-| ArcGIS Column | second_batch Column | Transformation |
+| ArcGIS Column | Output Column | Transformation |
 |---------------|---------------------|----------------|
-| DNR | secondary_substation | `SecondarySubstation.{DNR}` |
+| DNR | secondary_substation | `SecondarySubstation.{substation_id}` |
 | (PNR from cabinets) | zip_code_secondary_substation | Direct value |
-| DNR | transformer | `Transformer.{DNR}` |
-| TYPE (from transformers) | transformer_capacity | Extract numeric: 800 |
-| (derived) | lv_feeder | `LvFeeder.1416` |
-| (placeholder) | lv_feeder_fuse_size | 250 A |
-| FROM | node1 | `Cabinet.{FROM}` or `LvFeeder.1416` |
+| DNR | transformer | `Transformer.{substation_id}` |
+| MALRAUN (from transformers) | transformer_capacity | Direct (kVA) |
+| TENGIFLOKKUR (from transformers) | vector_group | Direct string |
+| (from config) | lv_feeder | `LvFeeder.{substation_id}` |
+| (computed) | lv_feeder_fuse_size | From transformer kVA lookup |
+| FROM | node1 | `Cabinet.{FROM}` or `LvFeeder.{id}` if D-prefix |
 | TO | node2 | `Cabinet.{TO}` |
 | OBJECTID | cable_id | `LvCable.{OBJECTID}` |
-| GERD_DECODED (material) | cable_type | Al->MAL, Cu->PEX |
-| SHAPE_LENGD | cable_length | Direct (meters) |
+| GERD_DECODED (material) | cable_type | PEX (default fallback: MAL) |
+| SHAPE_LENGD | cable_length | Direct (meters), fallback to LENGD |
 | GERD_DECODED (size) | phase_size | Extract numeric (mm²) |
-| GERD_DECODED (material) | phase_material | AL or Cu |
+| GERD_DECODED (material) | phase_material | AL or CU |
 | (lookup table) | cable_capacity | From IEC table (A) |
 | (lookup table) | resistance | From IEC table (Ohm/km) |
 | (lookup table) | reactance | From IEC table (Ohm/km) |
 
 #### Smart Meter Data (parquet -> phase_measurements_YYYY_M.csv)
 
-| Parquet Column | second_batch Column | Transformation |
+| Parquet Column | Output Column | Transformation |
 |----------------|---------------------|----------------|
-| husveita_fastanumer | meter_number | String (200 unique meter IDs) |
+| husveita_fastanumer | meter_number | String (unique meter IDs) |
 | ts | timestamp_dst | Parse as datetime |
 | V_a | voltage_l1 | Direct (Volts) |
 | V_b | voltage_l2 | Direct (Volts) |
@@ -171,18 +190,23 @@ Lines are filtered by `HLUTVERK` (role):
 
 | Icelandic Type | English | Included? |
 |----------------|---------|-----------|
-| Heimtaug | Home connection | Yes |
+| Heimtaug | Home connection / service cable | Yes |
 | Lágspennudreifilögn | LV distribution line | Yes |
 | Lágspennustrengur | LV conductor | Yes |
-| Götuljósalögn | Street lighting | **No** (separate circuit) |
+| Lágspennu- og götuljósalögn | Combined LV + street lighting trunk | Yes |
+| Götuljósalögn | Street lighting (pure) | **No** (separate circuit) |
+
+**Note**: "Lágspennu- og götuljósalögn" are combined trunk cables that carry
+400V power and are essential for network connectivity. They are distinct from
+pure "Götuljósalögn" which are dedicated street lighting circuits.
 
 ### Node Identification
 
 The `FROM`/`TO` columns in lines_clean.csv use these conventions:
-- `D1416` = Distribution point at transformer (maps to `LvFeeder.1416`)
-- `31832`, `31692`, `31693`, `33894` = Junction cabinet TENGINR values
-- `194558`, `196437`, etc. = Individual meter/home connection endpoints
-- `1416` = Transformer/substation node
+- `D{DNR}` (e.g., `D1416`) = Distribution point at transformer (maps to `LvFeeder.{id}`)
+- Cabinet TENGINR values (e.g., `31832`) = Junction cabinet nodes
+- Line NR values (e.g., `194558`) = Individual meter/home connection endpoints
+- `0` = Placeholder node (skipped in topology translation)
 
 ---
 
@@ -192,11 +216,11 @@ The `FROM`/`TO` columns in lines_clean.csv use these conventions:
 
 The parquet smart meter data contains three important ID columns:
 
-| Column | Meaning | Unique Count | Example |
-|--------|---------|-------------|---------|
-| `husveita_fastanumer` | **Smart meter ID** | 200 | "205724" |
-| `numer_heimlagnar` | **Line/connection ID** (Heimtaug endpoint) | 15 | "194558" |
-| `tengiskapur` | **Junction cabinet ID** | 5 | "31832", "D1416" |
+| Column | Meaning | Example |
+|--------|---------|---------|
+| `husveita_fastanumer` | **Smart meter ID** | "205724" |
+| `numer_heimlagnar` | **Line/connection ID** (Heimtaug endpoint) | "194558" |
+| `tengiskapur` | **Junction cabinet ID** | "31832", "D1416" |
 
 **Hierarchy**: Multiple meters share the same line (apartment complexes, up to 30 per line), and multiple lines connect to the same cabinet.
 
@@ -209,41 +233,31 @@ Cabinet 31832 (tengiskapur)
 
 **In the topology**: Each `numer_heimlagnar` maps to the TO endpoint of a Heimtaug line in `lines_clean.csv`. The meter's electrical connection point in the topology is `Cabinet.{numer_heimlagnar}`.
 
----
-
-## Known Limitations
-
-1. **No per-phase reactive power**: Only aggregate Q_total is available.
-   The proportional split is an approximation.
-
-2. **No export/generation data**: P23 and Qprod are set to zero.
-   If there are solar panels or batteries, they are not captured.
-
-3. **Street lighting excluded**: The Götuljósalögn network is excluded.
-   These are on separate circuits with no BUN_FRA/BUN_TIL connectivity.
-
-4. **Cable R/X from standard tables**: Actual installed cable parameters
-   may differ due to aging, temperature, or non-standard installations.
-
-5. **No THD data**: The second_batch format supports harmonic distortion
-   columns (thdu_l1/l2/l3, thdi_l1/l2/l3) which are not available.
-
-6. **Single feeder assumption**: All lines are assigned to LvFeeder.1416.
-   The actual network may have multiple feeders from the transformer.
-
-7. **Heat pump / solar panel flags**: Set to false by default as this
-   information is not in the ArcGIS data.
-
----
-
 ## File Inventory
+
+### Pipeline Scripts
 
 | File | Purpose |
 |------|---------|
-| `Jason_data_adapter.py` | Translate ArcGIS -> second_batch, append to source data |
-| `Jason_visualize_topology.py` | Generate network topology map (PNG) |
-| `Jason_run_pipeline.py` | Run DataPreprocessor pipeline via jason_config.yaml |
-| `Jason_prepare_powerflow.py` | Convert pipeline output -> power flow parquets |
-| `Jason_run_powerflow.py` | Execute pandapower analysis |
-| `Jason_run.py` | Master orchestration script |
+| `run_complete.py` | Master orchestration — runs all pipeline steps per substation |
+| `Jason_config.py` | Shared config loader, reads `config/jason_config.yaml` |
+| `Jason_data_adapter.py` | Translate ArcGIS topology + smart meter data into power flow input format |
+| `Jason_prepare_powerflow.py` | Build per-phase load matrices, topology parquets, and meter-cabinet mappings |
+| `Jason_run_powerflow.py` | Execute pandapower 3-phase power flow analysis (balanced + unbalanced) |
+| `Jason_compare_losses.py` | Compare unbalanced vs balanced losses across substations |
+| `Jason_visualize_topology.py` | Generate network topology maps (geographic, tree, spring layouts) |
+| `Jason_customer_imbalance.py` | Analyze per-customer phase imbalance |
+| `Jason_line_utilization.py` | Analyze cable/line utilization |
+
+### Configuration
+
+| File | Purpose |
+|------|---------|
+| `config/jason_config.yaml` | Substation IDs, phase ratios, path overrides, pipeline parameters |
+
+### Documentation
+
+| File | Purpose |
+|------|---------|
 | `Jason_documentation.md` | This file |
+| `Data_info.md` | Column-by-column description of all source data files |

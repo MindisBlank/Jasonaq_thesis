@@ -18,6 +18,10 @@ substations:
     phase_ratio: [43, 40, 17]
   670:
     phase_ratio: [38, 32, 30]
+    # Uncomment these to run on anonymized data instead:
+    smartmeter_dir: "data/anonymized/670_Trafo_1"
+    smartmeter_file: "smartmeter.parquet"
+    topology_dir: "data/anonymized/670_Trafo_1"
   1056:
     phase_ratio: [33, 20, 47]
   1299:

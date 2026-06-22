@@ -154,6 +154,10 @@ def resolve_node_coord(node_name, raw_coords):
         d_key = f"D{raw_id}"
         if d_key in raw_coords:
             return raw_coords[d_key]
+        # Fallback: config substation ID may differ from data DNR (e.g. anonymized data)
+        for k in raw_coords:
+            if k.startswith('D') and k[1:].isdigit():
+                return raw_coords[k]
 
     return None, None
 

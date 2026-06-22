@@ -40,23 +40,22 @@ OUTPUT_DIR = PROJECT_ROOT / "Powerflow" / "output" / "pf_input"
 # Set from config in main()
 SUBSTATION_ID = None
 LV_FEEDER_ID = None
-SMARTMETER_FILE = None
+SMARTMETER_PATH = None
 
 
-def load_sm_profiles(project_root):
+def load_sm_profiles(smartmeter_path):
     """
-    Load SM profiles from the source parquet file in data/smartmeter/.
+    Load SM profiles from the source parquet file.
     Returns (profiles, per_completed) where:
         profiles: dict of meter_id (str) -> DataFrame
         per_completed: float or None (coverage ratio from parquet)
     """
-    parquet_file = project_root / "data" / "smartmeter" / SMARTMETER_FILE
-    if not parquet_file.exists():
-        logger.error(f"Source parquet not found: {parquet_file}")
+    if not smartmeter_path.exists():
+        logger.error(f"Source parquet not found: {smartmeter_path}")
         return None, None
 
-    logger.info(f"Loading raw SM data from {parquet_file.name}")
-    sm_df = pd.read_parquet(parquet_file)
+    logger.info(f"Loading raw SM data from {smartmeter_path.name}")
+    sm_df = pd.read_parquet(smartmeter_path)
 
     # Extract per_completed before splitting into per-meter dicts
     per_completed = None
@@ -378,10 +377,10 @@ def main():
 
     # --- Load config ---
     cfg = load_config(args.substation)
-    global SUBSTATION_ID, LV_FEEDER_ID, SMARTMETER_FILE
+    global SUBSTATION_ID, LV_FEEDER_ID, SMARTMETER_PATH
     SUBSTATION_ID = cfg['substation_id']
     LV_FEEDER_ID = cfg['lv_feeder_id']
-    SMARTMETER_FILE = cfg['smartmeter_file']
+    SMARTMETER_PATH = cfg['smartmeter_dir'] / cfg['smartmeter_file']
 
     logger.info("=" * 80)
     logger.info("Jason Power Flow Input Preparation (3-phase unbalanced)")
@@ -392,7 +391,7 @@ def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     # --- Load SM profiles ---
-    profiles, per_completed = load_sm_profiles(PROJECT_ROOT)
+    profiles, per_completed = load_sm_profiles(SMARTMETER_PATH)
     if not profiles:
         logger.error("No SM data available. Run Jason_data_adapter.py first.")
         return
